@@ -23,7 +23,6 @@
 
 #include "knxd/knxd_client.h"
 #include "knxd/knxd_protocol.h"
-#include "state/address_cache.h"
 #include "state/session_store.h"
 #include "util/hex.h"
 #include "util/json_builder.h"
@@ -31,30 +30,23 @@
 
 namespace cvknxd {
 
-/// Maximum age (seconds) for a cached value to be returned immediately
-/// in long-poll mode before falling through to the poll() wait.
-static constexpr int kLongPollCacheMaxAgeSec = 5;
-
-ReadHandler::ReadHandler(KnxdClientInterface& knxd, AddressCache& cache,
-                         SessionStore& sessions,
+ReadHandler::ReadHandler(KnxdClientInterface& knxd, SessionStore& sessions,
                          int longpoll_timeout_sec)
-    : knxd_(knxd),
-      cache_(cache),
-      sessions_(sessions),
-      longpoll_timeout_sec_(longpoll_timeout_sec) {}
+    : knxd_(knxd), sessions_(sessions), longpoll_timeout_sec_(longpoll_timeout_sec) {}
 
 std::string ReadHandler::generate_index() {
   return std::to_string(index_counter_++);
 }
 
 std::optional<int> ReadHandler::parse_timeout(std::string_view t_str) {
-  if (t_str.empty()) return std::nullopt;
+  if (t_str.empty())
+    return std::nullopt;
   try {
-    // Use size_t to verify entire string was consumed
     std::string s{t_str};
     size_t pos = 0;
     int val = std::stoi(s, &pos);
-    if (pos != s.size()) return std::nullopt;  // trailing garbage
+    if (pos != s.size())
+      return std::nullopt;  // trailing garbage
     return val;
   } catch (const std::invalid_argument&) {
     return std::nullopt;
@@ -112,30 +104,6 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
 
   // ---- Long-poll mode: no timeout parameter ----
   if (!timeout.has_value()) {
-    // Check cache first for recent values
-    JsonBuilder json;
-    json.start_object();
-    json.add_key("d");
-    json.start_object();
-
-    bool has_data = false;
-    for (auto addr : eib_addrs) {
-      auto cached = cache_.get(addr, kLongPollCacheMaxAgeSec);
-      if (cached) {
-        auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(addr)};
-        json.add_string(cv_addr.to_cometvisu(), hex_encode(cached->data(), cached->size()));
-        has_data = true;
-      }
-    }
-    json.end_object();
-
-    if (has_data) {
-      json.add_string("i", generate_index());
-      json.end_object();
-      result.body = json.take();
-      return result;
-    }
-
     // ---- Efficient poll-based wait on knxd socket ----
     int knxd_fd = knxd_.get_fd();
     if (knxd_fd < 0) {
@@ -143,15 +111,13 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
       uint16_t recv_addr;
       std::vector<uint8_t> apdu_data;
       if (knxd_.poll_group_telegram(recv_addr, apdu_data)) {
-        // cache update and notify are handled by the callback in poll_group_telegram()
         if (eib_addrs.find(recv_addr) != eib_addrs.end()) {
           JsonBuilder resp;
           resp.start_object();
           resp.add_key("d");
           resp.start_object();
           auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(recv_addr)};
-          resp.add_string(cv_addr.to_cometvisu(),
-                          hex_encode(apdu_data.data(), apdu_data.size()));
+          resp.add_string(cv_addr.to_cometvisu(), hex_encode(apdu_data.data(), apdu_data.size()));
           resp.end_object();
           resp.add_string("i", generate_index());
           resp.end_object();
@@ -172,14 +138,14 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     }
 
     // Use poll() on the knxd socket — efficient, no CPU burning
-    auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(longpoll_timeout_sec_);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(longpoll_timeout_sec_);
 
     while (true) {
       auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                            deadline - std::chrono::steady_clock::now())
                            .count();
-      if (remaining <= 0) break;  // timeout
+      if (remaining <= 0)
+        break;  // timeout
 
       struct pollfd pfd;
       pfd.fd = knxd_fd;
@@ -188,10 +154,12 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
 
       int poll_ret = ::poll(&pfd, 1, static_cast<int>(remaining));
       if (poll_ret < 0) {
-        if (errno == EINTR) continue;
+        if (errno == EINTR)
+          continue;
         break;  // error
       }
-      if (poll_ret == 0) break;  // timeout
+      if (poll_ret == 0)
+        break;  // timeout
 
       if (pfd.revents & POLLIN) {
         uint16_t recv_addr;
@@ -207,8 +175,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
             resp.add_key("d");
             resp.start_object();
             auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(recv_addr)};
-            resp.add_string(cv_addr.to_cometvisu(),
-                            hex_encode(apdu_data.data(), apdu_data.size()));
+            resp.add_string(cv_addr.to_cometvisu(), hex_encode(apdu_data.data(), apdu_data.size()));
             resp.end_object();
             resp.add_string("i", generate_index());
             resp.end_object();
@@ -236,7 +203,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     return result;
   }
 
-  // ---- Non-long-poll: timeout provided ----
+  // ---- Non-long-poll: timeout provided — query knxd's built-in cache ----
   int t_val = *timeout;
   JsonBuilder json;
   json.start_object();
@@ -248,22 +215,12 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
   for (auto addr : eib_addrs) {
     std::optional<std::vector<uint8_t>> data;
 
-    if (t_val > 0) {
-      data = cache_.get(addr, t_val);
-      if (!data) {
-        data = knxd_.cache_read(addr, true);
-        if (data) {
-          cache_.update(addr, *data);
-        }
-      }
-    } else if (t_val == 0) {
-      data = knxd_.cache_read(addr, false);
-      if (data) {
-        cache_.update(addr, *data);
-      }
+    if (t_val > 0 || t_val == 0) {
+      // Use knxd's built-in cache (delegates to knxd's group cache)
+      data = knxd_.cache_read(addr, (t_val == 0) ? false : true);
     } else {
-      // t_val < 0: cache only
-      data = cache_.get_any(addr);
+      // t_val < 0: cache only, non-blocking
+      data = knxd_.cache_read(addr, true);
     }
 
     if (data) {

@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <eibtypes.h>
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -82,14 +84,16 @@ enum class ApduType : uint8_t {
 [[nodiscard]] bool parse_apdu(const std::vector<uint8_t>& apdu, ApduType& out_type,
                               std::vector<uint8_t>& out_data);
 
-/// EIB message type constants.
+/// EIB message type constants — from knxd's eibtypes.h.
+/// Use the knxd-defined constants directly (EIB_OPEN_GROUPCON etc.) rather
+/// than hard-coding them.
 namespace EibMessageType {
-constexpr uint16_t OPEN_GROUPCON = 0x0026;
-constexpr uint16_t GROUP_PACKET = 0x0027;
-constexpr uint16_t APDU_PACKET = 0x0025;
-constexpr uint16_t OPEN_T_GROUP = 0x0022;
-constexpr uint16_t CACHE_READ = 0x0200;
-constexpr uint16_t CACHE_READ_NOWAIT = 0x0201;
+inline constexpr uint16_t OPEN_GROUPCON = EIB_OPEN_GROUPCON;
+inline constexpr uint16_t GROUP_PACKET = EIB_GROUP_PACKET;
+inline constexpr uint16_t APDU_PACKET = EIB_APDU_PACKET;
+inline constexpr uint16_t OPEN_T_GROUP = EIB_OPEN_T_GROUP;
+inline constexpr uint16_t CACHE_READ = EIB_CACHE_READ;
+inline constexpr uint16_t CACHE_READ_NOWAIT = EIB_CACHE_READ_NOWAIT;
 }  // namespace EibMessageType
 
 /// Build a complete eibd wire message.

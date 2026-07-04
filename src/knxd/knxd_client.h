@@ -16,7 +16,6 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,11 +23,6 @@
 #include <vector>
 
 namespace cvknxd {
-
-/// Callback type for incoming group telegrams.
-/// Parameters: group_address (16-bit eibaddr), apdu_data bytes.
-using GroupTelegramCallback =
-    std::function<void(uint16_t group_addr, const std::vector<uint8_t>& apdu_data)>;
 
 /// Interface for knxd communication — allows mocking in tests.
 class KnxdClientInterface {
@@ -76,9 +70,6 @@ public:
 
   /// Set the socket to non-blocking mode.
   virtual void set_nonblocking(bool enable) = 0;
-
-  /// Set callback for incoming group telegrams.
-  virtual void set_telegram_callback(GroupTelegramCallback callback) = 0;
 };
 
 /// Real implementation of KnxdClientInterface using Unix sockets.
@@ -105,7 +96,6 @@ public:
                                          std::vector<uint8_t>& out_apdu) override;
   [[nodiscard]] int get_fd() const override;
   void set_nonblocking(bool enable) override;
-  void set_telegram_callback(GroupTelegramCallback callback) override;
 
 private:
   struct Impl;

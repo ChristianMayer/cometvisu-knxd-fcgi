@@ -66,10 +66,6 @@ bool MockKnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<u
   return true;
 }
 
-void MockKnxdClient::set_telegram_callback(GroupTelegramCallback callback) {
-  telegram_callback_ = std::move(callback);
-}
-
 int MockKnxdClient::get_fd() const {
   return -1;  // mock has no real fd
 }
@@ -94,7 +90,6 @@ void MockKnxdClient::reset() {
   while (!telegram_queue_.empty())
     telegram_queue_.pop();
   sent_packets_.clear();
-  telegram_callback_ = nullptr;
 }
 
 }  // namespace cvknxd

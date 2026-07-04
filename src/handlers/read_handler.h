@@ -23,7 +23,6 @@
 namespace cvknxd {
 
 class KnxdClientInterface;
-class AddressCache;
 class SessionStore;
 
 /// Result of a read operation.
@@ -38,10 +37,11 @@ struct ReadResult {
 
 /// Handles CometVisu read requests: GET /r?s=SESSION&a=ADDRESS&t=TIMEOUT&i=INDEX
 /// This is the most complex handler due to long-poll (COMET) support.
+///
+/// Uses knxd's built-in group cache (no local cache duplication).
 class ReadHandler {
 public:
-  ReadHandler(KnxdClientInterface& knxd, AddressCache& cache,
-              SessionStore& sessions, int longpoll_timeout_sec = 60);
+  ReadHandler(KnxdClientInterface& knxd, SessionStore& sessions, int longpoll_timeout_sec = 60);
 
   /// Process a read request.
   /// @param query_string Raw QUERY_STRING from FCGI.
@@ -50,7 +50,6 @@ public:
 
 private:
   KnxdClientInterface& knxd_;
-  AddressCache& cache_;
   SessionStore& sessions_;
   int longpoll_timeout_sec_;
   uint64_t index_counter_ = 1;

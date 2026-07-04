@@ -21,7 +21,6 @@
 namespace cvknxd {
 
 class KnxdClientInterface;
-class AddressCache;
 class SessionStore;
 
 /// Result of a write operation.
@@ -35,7 +34,7 @@ struct WriteResult {
 /// Handles CometVisu write requests: GET /w?s=SESSION&a=ADDRESS&v=VALUE
 class WriteHandler {
 public:
-  WriteHandler(KnxdClientInterface& knxd, AddressCache& cache, SessionStore& sessions);
+  WriteHandler(KnxdClientInterface& knxd, SessionStore& sessions);
 
   /// Process a write request.
   /// @param query_string Raw QUERY_STRING from FCGI.
@@ -44,7 +43,6 @@ public:
 
 private:
   KnxdClientInterface& knxd_;
-  AddressCache& cache_;
   SessionStore& sessions_;
 };
 

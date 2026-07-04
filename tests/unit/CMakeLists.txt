@@ -55,9 +55,3 @@ add_executable(test_login_handler
 )
 target_link_libraries(test_login_handler PRIVATE cvknxd_handlers cvknxd_state GTest::gtest GTest::gtest_main)
 add_test(NAME test_login_handler COMMAND test_login_handler)
-
-add_executable(test_address_cache
-    test_address_cache.cpp
-)
-target_link_libraries(test_address_cache PRIVATE cvknxd_state GTest::gtest GTest::gtest_main)
-add_test(NAME test_address_cache COMMAND test_address_cache)

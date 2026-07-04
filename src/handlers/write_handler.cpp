@@ -17,16 +17,14 @@
 
 #include "knxd/knxd_client.h"
 #include "knxd/knxd_protocol.h"
-#include "state/address_cache.h"
 #include "state/session_store.h"
 #include "util/hex.h"
 #include "util/query_string.h"
 
 namespace cvknxd {
 
-WriteHandler::WriteHandler(KnxdClientInterface& knxd, AddressCache& cache,
-                           SessionStore& sessions)
-    : knxd_(knxd), cache_(cache), sessions_(sessions) {}
+WriteHandler::WriteHandler(KnxdClientInterface& knxd, SessionStore& sessions)
+    : knxd_(knxd), sessions_(sessions) {}
 
 WriteResult WriteHandler::handle(std::string_view query_string) {
   QueryString params{query_string};
@@ -63,7 +61,7 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
   // Build APDU for write
   auto apdu = build_apdu(ApduType::Write, data);
 
-  // Write to each address
+  // Write to each address — knxd's built-in cache is auto-updated
   bool any_success = false;
   for (auto addr_str : addresses) {
     auto parsed = KnxAddress::from_cometvisu(addr_str);
@@ -72,8 +70,6 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
 
     uint16_t eibaddr = parsed->group.to_eibaddr();
     if (knxd_.send_group_packet(eibaddr, apdu)) {
-      // Update cache optimistically
-      cache_.update(eibaddr, data);
       any_success = true;
     }
   }

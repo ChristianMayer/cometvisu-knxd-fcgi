@@ -20,7 +20,6 @@
 #include "fcgi/fcgi_server.h"
 #include "knxd/knxd_client.h"
 #include "router/router.h"
-#include "state/address_cache.h"
 #include "state/session_store.h"
 
 namespace {
@@ -41,7 +40,8 @@ int main() {
   int longpoll_timeout = 60;
   if (const char* lp = getenv("LONGPOLL_TIMEOUT_SEC")) {
     longpoll_timeout = std::atoi(lp);
-    if (longpoll_timeout <= 0) longpoll_timeout = 60;
+    if (longpoll_timeout <= 0)
+      longpoll_timeout = 60;
   }
 
   // ---- Initialize components ----
@@ -61,17 +61,10 @@ int main() {
   knxd.set_nonblocking(true);
 
   SessionStore sessions;
-  AddressCache cache;
-
-  // ---- Set up telegram callback ----
-  // Incoming telegrams update the cache so it stays warm between requests.
-  // Long-poll notifications are handled internally by the ReadHandler.
-  knxd.set_telegram_callback([&](uint16_t group_addr, const std::vector<uint8_t>& apdu_data) {
-    cache.update(group_addr, apdu_data);
-  });
 
   // ---- Create router and server ----
-  Router router(knxd, sessions, cache, longpoll_timeout);
+  // No local cache — we delegate to knxd's built-in cache via cache_read().
+  Router router(knxd, sessions, longpoll_timeout);
 
   FcgiServer server;
   server.set_handler([&](const FcgiRequest& req) -> FcgiResponse { return router.route(req); });

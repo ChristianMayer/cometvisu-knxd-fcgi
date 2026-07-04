@@ -16,7 +16,6 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -46,7 +45,6 @@ public:
                                          std::vector<uint8_t>& out_apdu) override;
   [[nodiscard]] int get_fd() const override;
   void set_nonblocking(bool enable) override;
-  void set_telegram_callback(GroupTelegramCallback callback) override;
 
   // ---- Test helpers ----
 
@@ -76,7 +74,6 @@ private:
   std::unordered_map<uint16_t, std::vector<uint8_t>> cached_values_;
   std::queue<std::pair<uint16_t, std::vector<uint8_t>>> telegram_queue_;
   std::vector<SentPacket> sent_packets_;
-  GroupTelegramCallback telegram_callback_;
 };
 
 }  // namespace cvknxd
