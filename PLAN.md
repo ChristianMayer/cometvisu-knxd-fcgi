@@ -6,14 +6,15 @@ This project implements a **FastCGI backend** in **modern C++ (C++20)** that bri
 the [CometVisu Protocol](https://github.com/CometVisu/CometVisu/wiki/Protocol)
 to a locally running [knxd](https://github.com/knxd/knxd) daemon.
 
-The backend runs as a **single FastCGI process** and handles all three
+The backend runs as a **single FastCGI process** and handles the three
 CometVisu endpoints:
 
-| Endpoint | HTTP Method | Purpose                  |
-|----------|-------------|--------------------------|
-| `/l`     | GET         | Login / session          |
-| `/r`     | GET         | Read (long-poll / COMET) |
-| `/w`     | GET         | Write                    |
+| Endpoint | HTTP Method | Purpose                  | Status |
+|----------|-------------|--------------------------|--------|
+| `/l`     | GET         | Login / session          | ✅     |
+| `/r`     | GET         | Read (long-poll / COMET) | ✅     |
+| `/w`     | GET         | Write                    | ✅     |
+| `/f`     | POST/PUT/DELETE | Filter management    | 🔜 deferred |
 
 It communicates with knxd via its **Unix domain socket** (default: `/run/knx`)
 using the **eibd client binary protocol**.
@@ -37,7 +38,8 @@ using the **eibd client binary protocol**.
 │                                                          │
 │  ┌──────────┐   ┌───────────────┐   ┌─────────────────┐ │
 │  │ FCGI     │   │   Request     │   │   Knxd Client   │ │
-│  │ Listener │──►│   Router      │──►│   (Unix Socket)  │ │
+│  │ Listener │──►│   Router      │──►│   (non-blocking) │ │
+│  │          │   │               │   │                 │ │
 │  │          │   │               │   │                 │ │
 │  └──────────┘   │  /l → Login   │   │  connect()      │ │
 │                 │  /r → Read    │   │  send group msg │ │
@@ -75,7 +77,8 @@ using the **eibd client binary protocol**.
 - Query params: `s` (session), `a` (address, repeatable), `t` (timeout), `i` (index)
 - Address format: `NAMESPACE:VALUE` — e.g. `KNX:1/2/3`
 - Timeout semantics:
-  - Omitted → long-poll (COMET), hold connection until new data
+  - Omitted → long-poll (COMET): hold connection via **poll()** on knxd fd,
+    zero-CPU wait until data arrives or configurable timeout expires
   - `t=0` → read from bus NOW (blocking read via knxd cache)
   - `t>0` → return cached data ≤ `t` seconds old; if none, read bus
   - `t<0` → return cached data only, never read bus
@@ -210,6 +213,7 @@ cometvisu-knxd-fcgi/
 │   │   ├── test_knxd_address.cpp
 │   │   ├── test_json_builder.cpp
 │   │   ├── test_session_store.cpp
+│   │   ├── test_login_handler.cpp
 │   │   └── test_address_cache.cpp
 │   ├── integration/
 │   │   ├── CMakeLists.txt
@@ -245,50 +249,58 @@ cometvisu-knxd-fcgi/
 
 ## 7. Implementation Phases
 
-### Phase 1: Foundation
-- [ ] Project skeleton, CMake, googletest integration
-- [ ] Utility classes: `QueryString`, `Hex`, `JsonBuilder`
-- [ ] Unit tests for all utilities
+### Phase 1: Foundation ✅
+- [x] Project skeleton, CMake, googletest integration
+- [x] Utility classes: `QueryString`, `Hex`, `JsonBuilder`
+- [x] Unit tests for all utilities
 
-### Phase 2: knxd Protocol
-- [ ] `KnxdProtocol`: address encoding, APDU encoding/decoding
-- [ ] `KnxdClient`: Unix socket connect, send, receive
-- [ ] Mock knxd socket for testing
-- [ ] Unit tests + integration tests
+### Phase 2: knxd Protocol ✅
+- [x] `KnxdProtocol`: address encoding, APDU encoding/decoding
+- [x] `KnxdClient`: Unix socket connect, send, receive
+- [x] **Non-blocking I/O**: `set_nonblocking()` via `fcntl O_NONBLOCK`, `get_fd()`
+- [x] Mock knxd socket for testing
+- [x] Unit tests + integration tests
 
-### Phase 3: FastCGI Server
-- [ ] FCGI protocol implementation (or integrate libfcgi)
-- [ ] `FcgiServer` accept loop, `FcgiRequest` parsing
-- [ ] Integration tests with test HTTP client
+### Phase 3: FastCGI Server ✅
+- [x] FCGI protocol implementation (libfcgi)
+- [x] `FcgiServer` accept loop, `FcgiRequest` parsing
+- [x] Integration tests with test HTTP client
 
-### Phase 4: Core Handlers
-- [ ] `LoginHandler` — session creation
-- [ ] `ReadHandler` — cached/bus/long-poll reads
-- [ ] `WriteHandler` — bus writes
-- [ ] Integration tests for each handler
+### Phase 4: Core Handlers ✅
+- [x] `LoginHandler` — session creation with secure random IDs
+- [x] `ReadHandler` — cached/bus/long-poll reads with poll()-based wait
+- [x] `WriteHandler` — bus writes
+- [x] **Session validation**: 401 responses for invalid sessions
+- [x] Integration tests for each handler (including error cases)
 
-### Phase 5: State Management
-- [ ] `SessionStore` — session lifecycle
-- [ ] `AddressCache` — value caching with TTL
-- [ ] `LongPoll` — COMET long-poll management
+### Phase 5: State Management ✅
+- [x] `SessionStore` — session lifecycle, secure random IDs (`mt19937_64`)
+- [x] `AddressCache` — value caching with TTL
+- [x] `LongPoll` — COMET long-poll management
 
-### Phase 6: Integration & Polish
-- [ ] `Router` — URL dispatch
-- [ ] End-to-end tests
-- [ ] Error handling, logging, configuration
+### Phase 6: Integration & Polish ✅
+- [x] `Router` — URL dispatch
+- [x] End-to-end tests
+- [x] Error handling: safe timeout parsing, proper HTTP status codes
+- [x] Logging, configuration via environment variables
+
+### Phase 7: Future / Deferred
+- [ ] Filter endpoint (`/f`) — POST/PUT/DELETE for batch address management
+- [ ] TLS support
+- [ ] Authentication (user/password validation)
+- [ ] Clang-tidy / clang-format CI enforcement
+- [ ] Performance benchmarks
+- [ ] Integration test with real knxd instance
 
 ---
 
 ## 8. Configuration
 
-Environment variables:
+Environment variables actually implemented:
 | Variable               | Default        | Description                  |
 |------------------------|----------------|------------------------------|
 | `KNXD_SOCKET`          | `/run/knx`     | Path to knxd Unix socket     |
-| `FCGI_LISTEN_PORT`     | (stdin)        | FCGI listen port (0 = stdin) |
-| `CACHE_TTL_SECONDS`    | `30`           | Default cache TTL            |
 | `LONGPOLL_TIMEOUT_SEC` | `60`           | Max long-poll hold time      |
-| `LOG_LEVEL`            | `info`         | Logging verbosity            |
 
 ---
 
@@ -335,11 +347,42 @@ This project follows these conventions for LLM-based development:
 
 ---
 
-## 11. Next Steps
+## 11. Current Status (2026-07-04)
 
-After this plan is reviewed and approved:
+### Test Suite: 12 tests, all passing
 
-1. Create the top-level `CMakeLists.txt` and project skeleton.
-2. Set up Google Test via `FetchContent`.
-3. Implement Phase 1 (utility classes + tests).
-4. Proceed through phases 2–6 in order.
+| Layer | Tests | Details |
+|-------|-------|---------|
+| Unit  | 8     | query_string, hex, knxd_protocol, knxd_address, json_builder, session_store, login_handler, address_cache |
+| Integration | 3 | knxd_client, read_handler, write_handler |
+| E2E   | 1     | full_flow (login, read, write, router dispatch, cache integration) |
+
+### Key Design Decisions Implemented
+
+1. **Non-blocking I/O**: KnxdClient uses `fcntl O_NONBLOCK` + `get_fd()` for `poll()` integration.
+   Long-poll in ReadHandler uses `::poll()` on the knxd fd — the kernel puts the
+   process to sleep until data arrives or timeout, burning zero CPU.
+
+2. **Session validation**: Both `/r` and `/w` validate the `s=` parameter. Invalid
+   sessions return HTTP 401. Anonymous session `s=0` is always accepted.
+   Session check happens _after_ parameter validation (400 > 401 priority).
+
+3. **Secure session IDs**: `mt19937_64` PRNG seeded from `std::random_device`,
+   producing 16-char hex strings. Not predictable like sequential counters.
+
+4. **Safe parsing**: `ReadHandler::parse_timeout()` returns `std::optional<int>`,
+   catching `std::invalid_argument` and `std::out_of_range`. Trailing garbage
+   (e.g. `t=5abc`) is rejected.
+
+5. **Mock-driven testing**: `KnxdClientInterface` with `MockKnxdClient` enables
+   testing all handlers without a real knxd instance.
+
+### What's Deferred
+
+- **Filter endpoint** (`/f`): POST/PUT/DELETE for batch address management per
+  CometVisu protocol. Not needed for basic read/write operation.
+- **TLS**: All communication should be behind a TLS-terminating reverse proxy.
+- **Authentication**: Login accepts any user/password and creates a session.
+  Real auth would require a user database or PAM integration.
+- **Production hardening**: log rotation, signal handling, resource limits,
+  daemonization.
