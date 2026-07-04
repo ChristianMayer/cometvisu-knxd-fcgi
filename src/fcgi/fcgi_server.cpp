@@ -22,6 +22,8 @@
 #include <cstring>
 #include <iostream>
 
+#include "../util/debug_log.h"
+
 namespace cvknxd {
 
 /// Maximum allowed request body size (64 KB).
@@ -42,7 +44,13 @@ int FcgiServer::run() {
 
   while (FCGI_Accept() >= 0) {
     FcgiRequest req = read_request();
+
+    DebugLog::http_request(req.request_method, req.request_uri);
+
     FcgiResponse resp = handler_(req);
+
+    DebugLog::http_response(resp.status_code, resp.body);
+
     write_response(resp);
   }
 
@@ -71,18 +79,16 @@ FcgiRequest FcgiServer::read_request() {
     const char* content_length_str = getenv("CONTENT_LENGTH");
     if (content_length_str[0] != '\0') {
       int content_length = 0;
-      auto [ptr, ec] =
-          std::from_chars(content_length_str,
-                          content_length_str + std::strlen(content_length_str),
-                          content_length);
+      auto [ptr, ec] = std::from_chars(
+          content_length_str, content_length_str + std::strlen(content_length_str), content_length);
       if (ec != std::errc{} || content_length <= 0) {
         // Invalid or non-positive content length — skip body
         return req;
       }
       // Cap at maximum to prevent OOM on constrained systems
       if (content_length > kMaxContentLength) {
-        std::cerr << "[WARN] CONTENT_LENGTH " << content_length
-                  << " exceeds maximum " << kMaxContentLength << ", truncating\n";
+        std::cerr << "[WARN] CONTENT_LENGTH " << content_length << " exceeds maximum "
+                  << kMaxContentLength << ", truncating\n";
         content_length = kMaxContentLength;
       }
       req.content.resize(static_cast<size_t>(content_length));

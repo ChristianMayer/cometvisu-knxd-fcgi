@@ -23,6 +23,7 @@
 #include "knxd/knxd_client.h"
 #include "router/router.h"
 #include "state/session_store.h"
+#include "util/debug_log.h"
 
 namespace {
 
@@ -54,6 +55,12 @@ int parse_env_int(const char* name, int default_val, int min_val, int max_val) {
 
 int main() {
   using namespace cvknxd;
+
+  // ---- Debug mode ----
+  // Enable via environment variable DEBUG_BACKEND=1 (or DEBUG_BACKEND=true/yes/on).
+  // When enabled, all HTTP request/response cycles and knxd communication
+  // are printed to stderr for troubleshooting.
+  DebugLog::init_from_env();
 
   // ---- Configuration ----
   // Environment variables are inherited from the FCGI-spawning web server.

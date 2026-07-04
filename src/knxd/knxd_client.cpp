@@ -26,6 +26,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "../util/debug_log.h"
+#include "../util/hex.h"
 #include "knxd_protocol.h"
 
 namespace cvknxd {
@@ -33,8 +35,8 @@ namespace cvknxd {
 struct KnxdClient::Impl {
   int fd = -1;
   bool group_socket_open = false;
-  std::string socket_path_;   // stored for reconnect
-  bool write_only_ = false;    // stored for reconnect
+  std::string socket_path_;           // stored for reconnect
+  bool write_only_ = false;           // stored for reconnect
   std::vector<uint8_t> read_buffer_;  // buffered partial reads for non-blocking mode
 
   ~Impl() {
@@ -175,7 +177,7 @@ bool write_all(int fd, const uint8_t* data, size_t len) {
         int ret = ::poll(&pfd, 1, 5000);  // 5 second timeout
         if (ret <= 0)
           return false;  // timeout or error
-        continue;  // retry write
+        continue;        // retry write
       }
       return false;
     }
@@ -214,8 +216,7 @@ std::optional<std::vector<uint8_t>> read_message(int fd, std::vector<uint8_t>& b
         if (excess >= buffer.size()) {
           buffer.clear();
         } else {
-          buffer.erase(buffer.begin(),
-                       buffer.begin() + static_cast<ptrdiff_t>(excess));
+          buffer.erase(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(excess));
         }
       }
       buffer.insert(buffer.end(), tmp, tmp + n);
@@ -248,6 +249,9 @@ bool KnxdClient::open_group_socket(bool write_only) {
   std::vector<uint8_t> data = {wo_byte};
   auto msg = build_eibd_message(EibMessageType::OPEN_GROUPCON, data);
 
+  DebugLog::knxd_send("open_group_socket", "-",
+                      write_only ? "write_only=true" : "write_only=false");
+
   if (!write_all(impl_->fd, msg.data(), msg.size()))
     return false;
 
@@ -273,6 +277,10 @@ bool KnxdClient::send_group_packet(uint16_t group_addr, const std::vector<uint8_
       return false;
   }
 
+  auto addr_str = KnxGroupAddress::from_eibaddr(group_addr).to_string();
+
+  DebugLog::knxd_send("group_packet", addr_str, "apdu=" + hex_encode(apdu.data(), apdu.size()));
+
   std::vector<uint8_t> data;
   data.reserve(2 + apdu.size());
   data.push_back(static_cast<uint8_t>((group_addr >> 8) & 0xFF));
@@ -290,9 +298,13 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
       return std::nullopt;
   }
 
+  auto addr_str = KnxGroupAddress::from_eibaddr(group_addr).to_string();
+
   uint16_t msg_type = nowait ? EibMessageType::CACHE_READ_NOWAIT : EibMessageType::CACHE_READ;
   std::vector<uint8_t> data = {static_cast<uint8_t>((group_addr >> 8) & 0xFF),
                                static_cast<uint8_t>(group_addr & 0xFF)};
+
+  DebugLog::knxd_send("cache_read", addr_str, nowait ? "nowait=true" : "nowait=false");
 
   auto msg = build_eibd_message(msg_type, data);
   if (!write_all(impl_->fd, msg.data(), msg.size()))
@@ -318,11 +330,13 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
       // Re-queue any buffered unsolicited telegrams back into read_buffer_
       // so they can be consumed by subsequent poll_group_telegram() calls.
       for (auto& tele : buffered_telegrams) {
-        impl_->read_buffer_.insert(impl_->read_buffer_.begin(),
-                                   tele.begin(), tele.end());
+        impl_->read_buffer_.insert(impl_->read_buffer_.begin(), tele.begin(), tele.end());
       }
       // Response format: src(2) + dst(2) + apdu_data...
-      return std::vector<uint8_t>(resp_data.begin() + 4, resp_data.end());
+      auto result_data = std::vector<uint8_t>(resp_data.begin() + 4, resp_data.end());
+      DebugLog::knxd_recv("cache_read", addr_str,
+                          hex_encode(result_data.data(), result_data.size()));
+      return result_data;
     }
 
     if (resp_type == EibMessageType::APDU_PACKET) {
@@ -373,6 +387,9 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
     // Format: src_addr(2) + apdu...
     out_group_addr = static_cast<uint16_t>((msg_data[0] << 8) | msg_data[1]);
     out_apdu.assign(msg_data.begin() + 2, msg_data.end());
+
+    DebugLog::knxd_recv("apdu_packet", KnxGroupAddress::from_eibaddr(out_group_addr).to_string(),
+                        hex_encode(out_apdu.data(), out_apdu.size()));
 
     return true;
   }

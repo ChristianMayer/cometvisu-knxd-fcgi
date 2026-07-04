@@ -55,3 +55,9 @@ add_executable(test_login_handler
 )
 target_link_libraries(test_login_handler PRIVATE cvknxd_handlers cvknxd_state GTest::gtest GTest::gtest_main)
 add_test(NAME test_login_handler COMMAND test_login_handler)
+
+add_executable(test_debug_log
+    test_debug_log.cpp
+)
+target_link_libraries(test_debug_log PRIVATE cvknxd_util GTest::gtest GTest::gtest_main)
+add_test(NAME test_debug_log COMMAND test_debug_log)

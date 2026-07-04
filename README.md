@@ -42,6 +42,24 @@ spawn-fcgi -p 9000 -n ./build/src/cometvisu-knxd-fcgi
 |-----------------------|------------|------------------------------------------|
 | `KNXD_SOCKET`         | `/run/knx` | Path to the knxd Unix socket             |
 | `LONGPOLL_TIMEOUT_SEC`| `60`       | Max seconds to wait in long-poll `/r`    |
+| `DEBUG_BACKEND`       | *(unset)*  | Set to `1` to enable debug logging to stderr |
+
+### Debug mode
+
+Set `DEBUG_BACKEND=1` (or `true`/`yes`/`on`) to enable detailed debug output to
+stderr. This prints every HTTP request/response and all knxd communication with
+millisecond timestamps, making it easy to trace the full communication flow:
+
+```
+[2026-07-04 12:34:56.789] → HTTP REQUEST: GET /r?a=KNX:1/2/3&t=5
+[2026-07-04 12:34:56.790]   → KNXD SEND: cache_read addr=1/2/3 nowait=true
+[2026-07-04 12:34:56.791]   ← KNXD RECV: cache_read addr=1/2/3 data=42
+[2026-07-04 12:34:56.792] ← HTTP RESPONSE: 200 body={"d":{"KNX:1/2/3":"42"},"i":"1"}
+```
+
+KNXD operations are indented under their parent HTTP request. Long URIs (>500
+chars) and large response bodies (>1000 chars) are automatically truncated with
+a `... (truncated, NNNN chars total)` marker.
 
 ## Architecture
 
