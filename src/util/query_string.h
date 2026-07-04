@@ -23,6 +23,27 @@
 
 namespace cvknxd {
 
+/// Transparent hash and equality for heterogeneous lookup with string_view
+/// in unordered_map<string, ...> containers (C++20).
+struct StringHash {
+  using is_transparent = void;  // enables heterogeneous lookup
+
+  [[nodiscard]] size_t operator()(std::string_view sv) const {
+    return std::hash<std::string_view>{}(sv);
+  }
+  [[nodiscard]] size_t operator()(const std::string& s) const {
+    return std::hash<std::string>{}(s);
+  }
+};
+
+struct StringEqual {
+  using is_transparent = void;
+
+  [[nodiscard]] bool operator()(std::string_view a, std::string_view b) const {
+    return a == b;
+  }
+};
+
 /// Parsed query string from an HTTP/FCGI request.
 /// Supports multiple values for the same key (multi-valued parameters).
 class QueryString {
@@ -43,7 +64,7 @@ public:
   [[nodiscard]] size_t size() const { return params_.size(); }
 
 private:
-  std::unordered_map<std::string, std::vector<std::string>> params_;
+  std::unordered_map<std::string, std::vector<std::string>, StringHash, StringEqual> params_;
 };
 
 }  // namespace cvknxd

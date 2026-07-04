@@ -81,8 +81,7 @@ QueryString::QueryString(std::string_view raw) {
 }
 
 std::optional<std::string_view> QueryString::get(std::string_view key) const {
-  std::string key_str{key};
-  auto it = params_.find(key_str);
+  auto it = params_.find(key);
   if (it != params_.end() && !it->second.empty()) {
     return std::string_view{it->second.front()};
   }
@@ -90,8 +89,7 @@ std::optional<std::string_view> QueryString::get(std::string_view key) const {
 }
 
 std::vector<std::string_view> QueryString::get_all(std::string_view key) const {
-  std::string key_str{key};
-  auto it = params_.find(key_str);
+  auto it = params_.find(key);
   if (it != params_.end()) {
     std::vector<std::string_view> result;
     result.reserve(it->second.size());
@@ -104,8 +102,7 @@ std::vector<std::string_view> QueryString::get_all(std::string_view key) const {
 }
 
 bool QueryString::has(std::string_view key) const {
-  std::string key_str{key};
-  return params_.find(key_str) != params_.end();
+  return params_.find(key) != params_.end();
 }
 
 }  // namespace cvknxd

@@ -18,4 +18,4 @@ add_library(cvknxd_mocks STATIC
 )
 
 target_include_directories(cvknxd_mocks PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(cvknxd_mocks PUBLIC cvknxd_knxd cvknxd_util GTest::gtest)
+target_link_libraries(cvknxd_mocks PUBLIC cvknxd_knxd cvknxd_util)

@@ -23,7 +23,6 @@
 #include "mock_knxd_socket.h"
 #include "router/router.h"
 #include "state/address_cache.h"
-#include "state/long_poll.h"
 #include "state/session_store.h"
 
 using namespace cvknxd;
@@ -32,14 +31,13 @@ using namespace cvknxd;
 class FullFlowTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    knxd_.connect("/run/knx");
-    knxd_.open_group_socket(false);
+    (void)knxd_.connect("/run/knx");
+    (void)knxd_.open_group_socket(false);
   }
 
   MockKnxdClient knxd_;
   SessionStore sessions_;
   AddressCache cache_;
-  LongPollManager long_poll_;
 };
 
 // ---- Login Flow ----
@@ -66,7 +64,7 @@ TEST_F(FullFlowTest, AuthenticatedLogin) {
 
 TEST_F(FullFlowTest, WriteThenRead) {
   WriteHandler write_handler(knxd_, cache_, sessions_);
-  ReadHandler read_handler(knxd_, cache_, long_poll_, sessions_);
+  ReadHandler read_handler(knxd_, cache_, sessions_);
 
   // Step 1: Write a value
   auto write_result = write_handler.handle("a=KNX:1/2/3&v=0c6f");
@@ -81,7 +79,7 @@ TEST_F(FullFlowTest, WriteThenRead) {
 // ---- Router Dispatch ----
 
 TEST_F(FullFlowTest, RouterLoginRoute) {
-  Router router(knxd_, sessions_, cache_, long_poll_);
+  Router router(knxd_, sessions_, cache_);
 
   FcgiRequest req;
   req.request_method = "GET";
@@ -94,7 +92,7 @@ TEST_F(FullFlowTest, RouterLoginRoute) {
 }
 
 TEST_F(FullFlowTest, RouterReadRoute) {
-  Router router(knxd_, sessions_, cache_, long_poll_);
+  Router router(knxd_, sessions_, cache_);
 
   cache_.update(0x0A03, {0x42});
 
@@ -109,7 +107,7 @@ TEST_F(FullFlowTest, RouterReadRoute) {
 }
 
 TEST_F(FullFlowTest, RouterWriteRoute) {
-  Router router(knxd_, sessions_, cache_, long_poll_);
+  Router router(knxd_, sessions_, cache_);
 
   FcgiRequest req;
   req.request_method = "GET";
@@ -124,7 +122,7 @@ TEST_F(FullFlowTest, RouterWriteRoute) {
 }
 
 TEST_F(FullFlowTest, RouterUnknownRoute) {
-  Router router(knxd_, sessions_, cache_, long_poll_);
+  Router router(knxd_, sessions_, cache_);
 
   FcgiRequest req;
   req.request_method = "GET";
@@ -149,7 +147,7 @@ TEST_F(FullFlowTest, LoginResponseStructure) {
 }
 
 TEST_F(FullFlowTest, ReadResponseStructure) {
-  ReadHandler handler(knxd_, cache_, long_poll_, sessions_);
+  ReadHandler handler(knxd_, cache_, sessions_);
   cache_.update(0x0A03, {0x42});
 
   auto result = handler.handle("a=KNX:1/2/3&t=30");
@@ -170,7 +168,7 @@ TEST_F(FullFlowTest, CacheIsUpdatedAfterReceive) {
   std::vector<uint8_t> data = {0x0C, 0x6F};
   cache_.update(0x0A03, data);
 
-  ReadHandler handler(knxd_, cache_, long_poll_, sessions_);
+  ReadHandler handler(knxd_, cache_, sessions_);
   auto result = handler.handle("a=KNX:1/2/3&t=30");
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
 }

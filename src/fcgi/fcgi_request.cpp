@@ -18,7 +18,12 @@
 namespace cvknxd {
 
 std::string_view FcgiRequest::path() const {
-  // The path is the request_uri minus the query string
+  // path_info is the primary source for the endpoint path
+  // (e.g. SCRIPT_NAME=/cgi-bin/visu, PATH_INFO=/l)
+  if (!path_info.empty())
+    return std::string_view{path_info};
+
+  // Fall back to request_uri minus query string
   if (request_uri.empty())
     return {};
   auto qpos = request_uri.find('?');

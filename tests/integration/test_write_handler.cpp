@@ -26,8 +26,8 @@ using namespace cvknxd;
 class WriteHandlerTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    knxd_.connect("/run/knx");
-    knxd_.open_group_socket(false);
+    (void)knxd_.connect("/run/knx");
+    (void)knxd_.open_group_socket(false);
   }
 
   MockKnxdClient knxd_;
@@ -112,7 +112,7 @@ TEST_F(WriteHandlerTest, InvalidAddress) {
 TEST_F(WriteHandlerTest, UpdatesCache) {
   WriteHandler handler(knxd_, cache_, sessions_);
 
-  handler.handle("a=KNX:1/2/3&v=0c6f");
+  (void)handler.handle("a=KNX:1/2/3&v=0c6f");
 
   auto cached = cache_.get_any(0x0A03);
   ASSERT_TRUE(cached.has_value());
@@ -133,7 +133,7 @@ TEST_F(WriteHandlerTest, DefaultNamespace) {
 }
 
 TEST_F(WriteHandlerTest, SessionInvalidReturns401) {
-  sessions_.create_session(false);
+  (void)sessions_.create_session(false);
 
   WriteHandler handler(knxd_, cache_, sessions_);
   auto result = handler.handle("a=KNX:1/2/3&v=42&s=nonexistent");

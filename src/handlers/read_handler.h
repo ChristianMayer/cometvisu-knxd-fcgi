@@ -24,7 +24,6 @@ namespace cvknxd {
 
 class KnxdClientInterface;
 class AddressCache;
-class LongPollManager;
 class SessionStore;
 
 /// Result of a read operation.
@@ -41,7 +40,7 @@ struct ReadResult {
 /// This is the most complex handler due to long-poll (COMET) support.
 class ReadHandler {
 public:
-  ReadHandler(KnxdClientInterface& knxd, AddressCache& cache, LongPollManager& long_poll,
+  ReadHandler(KnxdClientInterface& knxd, AddressCache& cache,
               SessionStore& sessions, int longpoll_timeout_sec = 60);
 
   /// Process a read request.
@@ -52,7 +51,6 @@ public:
 private:
   KnxdClientInterface& knxd_;
   AddressCache& cache_;
-  LongPollManager& long_poll_;
   SessionStore& sessions_;
   int longpoll_timeout_sec_;
   uint64_t index_counter_ = 1;

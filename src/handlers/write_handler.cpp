@@ -15,12 +15,12 @@
 
 #include "write_handler.h"
 
-#include "../knxd/knxd_client.h"
-#include "../knxd/knxd_protocol.h"
-#include "../state/address_cache.h"
-#include "../state/session_store.h"
-#include "../util/hex.h"
-#include "../util/query_string.h"
+#include "knxd/knxd_client.h"
+#include "knxd/knxd_protocol.h"
+#include "state/address_cache.h"
+#include "state/session_store.h"
+#include "util/hex.h"
+#include "util/query_string.h"
 
 namespace cvknxd {
 

@@ -21,9 +21,7 @@
 #include "knxd/knxd_client.h"
 #include "router/router.h"
 #include "state/address_cache.h"
-#include "state/long_poll.h"
 #include "state/session_store.h"
-#include "util/hex.h"
 
 namespace {
 
@@ -64,19 +62,16 @@ int main() {
 
   SessionStore sessions;
   AddressCache cache;
-  LongPollManager long_poll;
 
   // ---- Set up telegram callback ----
+  // Incoming telegrams update the cache so it stays warm between requests.
+  // Long-poll notifications are handled internally by the ReadHandler.
   knxd.set_telegram_callback([&](uint16_t group_addr, const std::vector<uint8_t>& apdu_data) {
-    // Update cache on every incoming telegram
     cache.update(group_addr, apdu_data);
-
-    // Notify long-poll waiters
-    long_poll.notify(group_addr, hex_encode(apdu_data.data(), apdu_data.size()));
   });
 
   // ---- Create router and server ----
-  Router router(knxd, sessions, cache, long_poll, longpoll_timeout);
+  Router router(knxd, sessions, cache, longpoll_timeout);
 
   FcgiServer server;
   server.set_handler([&](const FcgiRequest& req) -> FcgiResponse { return router.route(req); });
@@ -87,7 +82,6 @@ int main() {
   int result = server.run();
 
   // Cleanup
-  long_poll.shutdown();
   knxd.disconnect();
 
   return result;

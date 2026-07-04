@@ -40,19 +40,24 @@ void JsonBuilder::add_quoted(std::string_view str) {
   for (char c : str) {
     switch (c) {
       case '"':
-        buffer_ += "\\\"";
+        buffer_.push_back('\\');
+        buffer_.push_back('"');
         break;
       case '\\':
-        buffer_ += "\\\\";
+        buffer_.push_back('\\');
+        buffer_.push_back('\\');
         break;
       case '\n':
-        buffer_ += "\\n";
+        buffer_.push_back('\\');
+        buffer_.push_back('n');
         break;
       case '\r':
-        buffer_ += "\\r";
+        buffer_.push_back('\\');
+        buffer_.push_back('r');
         break;
       case '\t':
-        buffer_ += "\\t";
+        buffer_.push_back('\\');
+        buffer_.push_back('t');
         break;
       default:
         buffer_.push_back(c);

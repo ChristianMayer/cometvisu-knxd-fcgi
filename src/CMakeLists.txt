@@ -36,7 +36,6 @@ target_link_libraries(cvknxd_knxd PUBLIC cvknxd_util)
 add_library(cvknxd_state STATIC
     state/session_store.cpp
     state/address_cache.cpp
-    state/long_poll.cpp
 )
 
 target_include_directories(cvknxd_state PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -57,6 +56,7 @@ add_library(cvknxd_router STATIC
 )
 
 target_include_directories(cvknxd_router PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(cvknxd_router PUBLIC cvknxd_handlers cvknxd_fcgi)
 
 # ---- Handlers library ----
 add_library(cvknxd_handlers STATIC

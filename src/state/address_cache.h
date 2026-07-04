@@ -26,8 +26,14 @@ namespace cvknxd {
 
 /// Caches the last known value of KNX group addresses with timestamp.
 /// Used for the "t" (timeout) parameter in CometVisu read requests.
+/// Automatically evicts oldest entries when the cache exceeds max_entries.
 class AddressCache {
 public:
+  /// Default maximum number of cached addresses.
+  static constexpr size_t kDefaultMaxEntries = 10000;
+
+  explicit AddressCache(size_t max_entries = kDefaultMaxEntries);
+
   /// Update the cached value for a group address.
   /// @param eibaddr 16-bit EIB group address.
   /// @param data Raw APDU data bytes.
@@ -60,6 +66,10 @@ private:
   };
 
   std::unordered_map<uint16_t, CacheEntry> cache_;
+  size_t max_entries_;
+
+  /// Evict the oldest entry. Called when cache exceeds max_entries_.
+  void evict_one();
 };
 
 }  // namespace cvknxd

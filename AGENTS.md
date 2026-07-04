@@ -86,7 +86,7 @@ actual file content (e.g., `#pragma once` or `#include`).
 | `src/router/`    | URL routing and handler dispatch             |
 | `src/handlers/`  | `/l`, `/r`, `/w` endpoint handlers           |
 | `src/knxd/`      | knxd Unix socket client and eibd protocol    |
-| `src/state/`     | Session store, address cache, long-poll mgmt |
+| `src/state/`     | Session store, address cache                  |
 | `src/util/`      | Query string parser, JSON builder, hex utils |
 | `tests/unit/`    | Unit tests (mocked dependencies)             |
 | `tests/integration/` | Integration tests (real or fake socket)  |
@@ -106,9 +106,11 @@ actual file content (e.g., `#pragma once` or `#include`).
 3. **Address cache**: Maintains a `std::unordered_map<group_addr, CacheEntry>`
    where `CacheEntry` has `value`, `last_updated` timestamp.
 
-4. **Long-poll**: For `/r` requests without timeout, the request is parked in a
-   waiter list keyed by the requested addresses. When a group telegram arrives
-   from knxd matching a watched address, waiters are woken.
+4. **Long-poll**: For `/r` requests without timeout, the handler enters a
+   `poll()`-based wait loop on the knxd socket file descriptor. The kernel puts
+   the process to sleep until data arrives or the configurable timeout expires,
+   burning zero CPU. Incoming telegrams update the cache via the telegram
+   callback and matching requests wake immediately.
 
 5. **No external JSON library**: The JSON responses are simple enough to build
    with a minimal, purpose-built `JsonBuilder`.

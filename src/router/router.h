@@ -27,7 +27,7 @@ namespace cvknxd {
 class Router {
 public:
   Router(KnxdClientInterface& knxd, SessionStore& sessions, AddressCache& cache,
-         LongPollManager& long_poll, int longpoll_timeout_sec = 60);
+         int longpoll_timeout_sec = 60);
 
   /// Dispatch a request and return the response.
   [[nodiscard]] FcgiResponse route(const FcgiRequest& request);

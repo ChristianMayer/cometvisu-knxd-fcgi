@@ -17,8 +17,27 @@
 
 namespace cvknxd {
 
+AddressCache::AddressCache(size_t max_entries) : max_entries_(max_entries) {}
+
 void AddressCache::update(uint16_t eibaddr, const std::vector<uint8_t>& data) {
+  // Evict if we're at capacity and not overwriting an existing entry
+  if (cache_.size() >= max_entries_ && cache_.find(eibaddr) == cache_.end()) {
+    evict_one();
+  }
   cache_[eibaddr] = CacheEntry{data, std::chrono::steady_clock::now()};
+}
+
+void AddressCache::evict_one() {
+  if (cache_.empty()) return;
+
+  // Find the oldest entry
+  auto oldest = cache_.begin();
+  for (auto it = cache_.begin(); it != cache_.end(); ++it) {
+    if (it->second.timestamp < oldest->second.timestamp) {
+      oldest = it;
+    }
+  }
+  cache_.erase(oldest);
 }
 
 std::optional<std::vector<uint8_t>> AddressCache::get(uint16_t eibaddr, int max_age_seconds) const {

@@ -21,23 +21,25 @@
 #include <chrono>
 #include <set>
 
-#include "../knxd/knxd_client.h"
-#include "../knxd/knxd_protocol.h"
-#include "../state/address_cache.h"
-#include "../state/long_poll.h"
-#include "../state/session_store.h"
-#include "../util/hex.h"
-#include "../util/json_builder.h"
-#include "../util/query_string.h"
+#include "knxd/knxd_client.h"
+#include "knxd/knxd_protocol.h"
+#include "state/address_cache.h"
+#include "state/session_store.h"
+#include "util/hex.h"
+#include "util/json_builder.h"
+#include "util/query_string.h"
 
 namespace cvknxd {
 
+/// Maximum age (seconds) for a cached value to be returned immediately
+/// in long-poll mode before falling through to the poll() wait.
+static constexpr int kLongPollCacheMaxAgeSec = 5;
+
 ReadHandler::ReadHandler(KnxdClientInterface& knxd, AddressCache& cache,
-                         LongPollManager& long_poll, SessionStore& sessions,
+                         SessionStore& sessions,
                          int longpoll_timeout_sec)
     : knxd_(knxd),
       cache_(cache),
-      long_poll_(long_poll),
       sessions_(sessions),
       longpoll_timeout_sec_(longpoll_timeout_sec) {}
 
@@ -118,7 +120,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
 
     bool has_data = false;
     for (auto addr : eib_addrs) {
-      auto cached = cache_.get(addr, 5);
+      auto cached = cache_.get(addr, kLongPollCacheMaxAgeSec);
       if (cached) {
         auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(addr)};
         json.add_string(cv_addr.to_cometvisu(), hex_encode(cached->data(), cached->size()));
@@ -141,7 +143,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
       uint16_t recv_addr;
       std::vector<uint8_t> apdu_data;
       if (knxd_.poll_group_telegram(recv_addr, apdu_data)) {
-        cache_.update(recv_addr, apdu_data);
+        // cache update and notify are handled by the callback in poll_group_telegram()
         if (eib_addrs.find(recv_addr) != eib_addrs.end()) {
           JsonBuilder resp;
           resp.start_object();
@@ -156,7 +158,6 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
           result.body = resp.take();
           return result;
         }
-        long_poll_.notify(recv_addr, hex_encode(apdu_data.data(), apdu_data.size()));
       }
       // Timeout with no data
       JsonBuilder resp;
@@ -192,12 +193,13 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
       }
       if (poll_ret == 0) break;  // timeout
 
-      if (pfd.revents & (POLLIN | POLLHUP | POLLERR)) {
+      if (pfd.revents & POLLIN) {
         uint16_t recv_addr;
         std::vector<uint8_t> apdu_data;
 
         while (knxd_.poll_group_telegram(recv_addr, apdu_data)) {
-          cache_.update(recv_addr, apdu_data);
+          // cache_.update() and long-poll notify are handled by the
+          // telegram callback invoked inside poll_group_telegram()
 
           if (eib_addrs.find(recv_addr) != eib_addrs.end()) {
             JsonBuilder resp;
@@ -213,9 +215,12 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
             result.body = resp.take();
             return result;
           }
-
-          long_poll_.notify(recv_addr, hex_encode(apdu_data.data(), apdu_data.size()));
         }
+      }
+
+      // Handle disconnect/error — avoid tight spin loop
+      if (pfd.revents & (POLLHUP | POLLERR)) {
+        break;
       }
     }
 

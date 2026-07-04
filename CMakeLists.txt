@@ -70,3 +70,6 @@ if(BUILD_TESTING)
     add_subdirectory(mocks)
     add_subdirectory(tests)
 endif()
+
+# ---- Install ----
+install(TARGETS cometvisu-knxd-fcgi RUNTIME DESTINATION bin)

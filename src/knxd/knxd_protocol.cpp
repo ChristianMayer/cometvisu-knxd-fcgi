@@ -136,14 +136,13 @@ bool parse_apdu(const std::vector<uint8_t>& apdu, ApduType& out_type,
     case ApduType::Response:
     case ApduType::Write:
       if (apdu.size() == 2) {
-        // Single byte packed in lower 6 bits
+        // Single byte value packed in lower 6 bits of byte 1.
+        // Note: This limits single-byte values to 0x00–0x3F (6 bits).
+        // For values > 0x3F, use multi-byte format with data in bytes 2+.
         out_data.push_back(apdu[1] & 0x3F);
       } else {
-        // Multi-byte: data starts at byte 2 (or byte 1 lower bits + rest)
-        // Actually, per eibd convention, for multi-byte: byte 1 is just
-        // the type marker, and all data bytes follow from byte 2.
-        // But some implementations use byte 1 lower bits too.
-        // We follow the knxd convention: all data from byte 2.
+        // Multi-byte value: type marker is in byte 1,
+        // all data bytes follow starting at byte 2.
         out_data.assign(apdu.begin() + 2, apdu.end());
       }
       break;

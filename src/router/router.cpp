@@ -20,40 +20,25 @@
 namespace cvknxd {
 
 Router::Router(KnxdClientInterface& knxd, SessionStore& sessions, AddressCache& cache,
-               LongPollManager& long_poll, int longpoll_timeout_sec)
+               int longpoll_timeout_sec)
     : login_handler_(sessions),
-      read_handler_(knxd, cache, long_poll, sessions, longpoll_timeout_sec),
+      read_handler_(knxd, cache, sessions, longpoll_timeout_sec),
       write_handler_(knxd, cache, sessions) {}
 
 FcgiResponse Router::route(const FcgiRequest& request) {
-  // Determine the endpoint from the path
-  // CometVisu uses: /l (login), /r (read), /w (write), /f (filter)
-  // The path_info or script_name typically contains the endpoint
-  // e.g. SCRIPT_NAME=/cgi-bin/visu, PATH_INFO=/l
-  std::string endpoint;
-  if (!request.path_info.empty()) {
-    endpoint = request.path_info;
-  } else {
-    // Try to extract from request_uri
-    endpoint = request.request_uri;
-    // Strip query string
-    auto qpos = endpoint.find('?');
-    if (qpos != std::string::npos) {
-      endpoint = endpoint.substr(0, qpos);
-    }
-  }
-
   FcgiResponse response;
 
-  // Simple path dispatch
-  if (endpoint == "/l") {
+  // Use FcgiRequest::path() to get the clean path without query string
+  std::string_view path = request.path();
+
+  if (path == "/l") {
     std::string body = login_handler_.handle(request.query_string);
     response.body = std::move(body);
-  } else if (endpoint == "/r") {
+  } else if (path == "/r") {
     auto result = read_handler_.handle(request.query_string);
     response.status_code = result.http_status;
     response.body = std::move(result.body);
-  } else if (endpoint == "/w") {
+  } else if (path == "/w") {
     auto result = write_handler_.handle(request.query_string);
     response.status_code = result.http_status;
   } else {

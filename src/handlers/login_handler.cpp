@@ -15,9 +15,9 @@
 
 #include "login_handler.h"
 
-#include "../state/session_store.h"
-#include "../util/json_builder.h"
-#include "../util/query_string.h"
+#include "state/session_store.h"
+#include "util/json_builder.h"
+#include "util/query_string.h"
 
 namespace cvknxd {
 

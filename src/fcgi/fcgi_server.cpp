@@ -98,7 +98,9 @@ void FcgiServer::write_response(const FcgiResponse& response) {
   // Blank line separator
   std::string header_end = "\r\n";
 
-  // Write to FCGI stdout (FCGI_fwrite takes non-const void*)
+  // Write to FCGI stdout.
+  // Note: FCGI_fwrite takes non-const void* (C API), but does not modify the buffer.
+  // The const_cast is safe here as the library only reads from the buffer.
   FCGI_fwrite(const_cast<char*>(status_line.data()), 1, status_line.size(), stdout);
   FCGI_fwrite(const_cast<char*>(content_type_line.data()), 1, content_type_line.size(), stdout);
   FCGI_fwrite(const_cast<char*>(content_length_line.data()), 1, content_length_line.size(), stdout);

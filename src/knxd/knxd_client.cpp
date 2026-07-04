@@ -33,6 +33,7 @@ struct KnxdClient::Impl {
   int fd = -1;
   GroupTelegramCallback telegram_callback;
   bool group_socket_open = false;
+  std::vector<uint8_t> read_buffer_;  // buffered partial reads for non-blocking mode
 
   ~Impl() {
     if (fd >= 0) {
@@ -103,39 +104,46 @@ bool write_all(int fd, const uint8_t* data, size_t len) {
   return true;
 }
 
-/// Read exactly len bytes. Returns true on success.
-bool read_exact(int fd, uint8_t* buf, size_t len) {
-  while (len > 0) {
-    ssize_t n = ::read(fd, buf, len);
-    if (n <= 0) {
-      if (n < 0 && errno == EINTR)
-        continue;
-      return false;
+/// Read a complete eibd message (length-prefixed) from the socket.
+/// Uses an internal buffer to handle partial reads in non-blocking mode.
+/// @param fd Socket file descriptor.
+/// @param buffer Accumulated read buffer (consumed as messages are parsed).
+/// @return Complete message bytes (including 2-byte length header), or std::nullopt.
+std::optional<std::vector<uint8_t>> read_message(int fd, std::vector<uint8_t>& buffer) {
+  // Try to parse a complete message from the buffer first
+  while (buffer.size() >= 2) {
+    uint16_t payload_len = static_cast<uint16_t>((buffer[0] << 8) | buffer[1]);
+    size_t total_needed = 2 + static_cast<size_t>(payload_len);
+
+    if (buffer.size() >= total_needed) {
+      // Complete message available — extract it
+      std::vector<uint8_t> msg(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(total_needed));
+      buffer.erase(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(total_needed));
+      return msg;
     }
-    buf += n;
-    len -= static_cast<size_t>(n);
-  }
-  return true;
-}
-
-/// Read a complete eibd message (length-prefixed).
-std::optional<std::vector<uint8_t>> read_message(int fd) {
-  // Read 2-byte length header
-  uint8_t len_buf[2];
-  if (!read_exact(fd, len_buf, 2))
-    return std::nullopt;
-
-  uint16_t payload_len = static_cast<uint16_t>((len_buf[0] << 8) | len_buf[1]);
-  std::vector<uint8_t> full_msg(2 + payload_len);
-  full_msg[0] = len_buf[0];
-  full_msg[1] = len_buf[1];
-
-  if (payload_len > 0) {
-    if (!read_exact(fd, full_msg.data() + 2, payload_len))
-      return std::nullopt;
+    // Need more data — will read below
+    break;
   }
 
-  return full_msg;
+  // Read more data from socket into buffer
+  uint8_t tmp[4096];
+  ssize_t n = ::read(fd, tmp, sizeof(tmp));
+  if (n > 0) {
+    buffer.insert(buffer.end(), tmp, tmp + n);
+    // Recurse to try parsing again with new data
+    return read_message(fd, buffer);
+  }
+  if (n == 0) {
+    return std::nullopt;  // EOF — connection closed
+  }
+  // n < 0
+  if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    return std::nullopt;  // No data available in non-blocking mode
+  }
+  if (errno == EINTR) {
+    return read_message(fd, buffer);  // Retry on signal
+  }
+  return std::nullopt;  // Real error
 }
 
 }  // namespace
@@ -152,7 +160,7 @@ bool KnxdClient::open_group_socket(bool write_only) {
     return false;
 
   // Read response
-  auto resp = read_message(impl_->fd);
+  auto resp = read_message(impl_->fd, impl_->read_buffer_);
   if (!resp)
     return false;
 
@@ -192,7 +200,7 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
   if (!write_all(impl_->fd, msg.data(), msg.size()))
     return std::nullopt;
 
-  auto resp = read_message(impl_->fd);
+  auto resp = read_message(impl_->fd, impl_->read_buffer_);
   if (!resp)
     return std::nullopt;
 
@@ -228,8 +236,8 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
   if (!is_connected())
     return false;
 
-  // Try non-blocking read of message
-  auto msg = read_message(impl_->fd);
+  // Try non-blocking read of message (uses internal buffer)
+  auto msg = read_message(impl_->fd, impl_->read_buffer_);
   if (!msg)
     return false;
 
@@ -242,6 +250,12 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
     // Format: src_addr(2) + apdu...
     out_group_addr = static_cast<uint16_t>((msg_data[0] << 8) | msg_data[1]);
     out_apdu.assign(msg_data.begin() + 2, msg_data.end());
+
+    // Invoke the telegram callback so cache and long-poll waiters are notified
+    if (impl_->telegram_callback) {
+      impl_->telegram_callback(out_group_addr, out_apdu);
+    }
+
     return true;
   }
 
