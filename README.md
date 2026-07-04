@@ -41,7 +41,7 @@ spawn-fcgi -p 9000 -n ./build/src/cometvisu-knxd-fcgi
 | Variable              | Default    | Description                              |
 |-----------------------|------------|------------------------------------------|
 | `KNXD_SOCKET`         | `/run/knx` | Path to the knxd Unix socket             |
-| `LONGPOLL_TIMEOUT_SEC`| `60`       | Max seconds to wait in long-poll `/r`    |
+| `LONGPOLL_TIMEOUT_SEC`| `300`      | Max seconds to wait in long-poll `/r`    |
 | `DEBUG_BACKEND`       | *(unset)*  | Set to `1` to enable debug logging to stderr |
 
 ### Debug mode

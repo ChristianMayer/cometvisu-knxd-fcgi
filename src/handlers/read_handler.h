@@ -41,7 +41,7 @@ struct ReadResult {
 /// Uses knxd's built-in group cache (no local cache duplication).
 class ReadHandler {
 public:
-  ReadHandler(KnxdClientInterface& knxd, SessionStore& sessions, int longpoll_timeout_sec = 60);
+  ReadHandler(KnxdClientInterface& knxd, SessionStore& sessions, int longpoll_timeout_sec = 300);
 
   /// Process a read request.
   /// @param query_string Raw QUERY_STRING from FCGI.

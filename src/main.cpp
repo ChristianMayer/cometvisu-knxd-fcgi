@@ -70,7 +70,7 @@ int main() {
   //   - An attacker who can manipulate the web server's environment already has
   //     sufficient access to compromise the system directly.
   const char* knxd_socket = get_env_default("KNXD_SOCKET", "/run/knx");
-  int longpoll_timeout = parse_env_int("LONGPOLL_TIMEOUT_SEC", 60, 1, kMaxLongpollTimeoutSec);
+  int longpoll_timeout = parse_env_int("LONGPOLL_TIMEOUT_SEC", 300, 1, kMaxLongpollTimeoutSec);
 
   // ---- Initialize components ----
   KnxdClient knxd;

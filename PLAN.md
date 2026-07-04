@@ -300,7 +300,7 @@ Environment variables actually implemented:
 | Variable               | Default        | Description                  |
 |------------------------|----------------|------------------------------|
 | `KNXD_SOCKET`          | `/run/knx`     | Path to knxd Unix socket     |
-| `LONGPOLL_TIMEOUT_SEC` | `60`           | Max long-poll hold time      |
+| `LONGPOLL_TIMEOUT_SEC` | `300`          | Max long-poll hold time      |
 
 ---
 
