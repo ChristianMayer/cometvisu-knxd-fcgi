@@ -82,21 +82,24 @@ TEST_F(WriteHandlerTest, WriteMultipleAddresses) {
 TEST_F(WriteHandlerTest, MissingAddress) {
   WriteHandler handler(knxd_, sessions_);
   auto result = handler.handle("v=42");
-  EXPECT_EQ(result.http_status, 400);
+  // Missing address: nothing to write, returns 200 (no-op)
+  EXPECT_EQ(result.http_status, 200);
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
 
 TEST_F(WriteHandlerTest, MissingValue) {
   WriteHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=KNX:1/2/3");
-  EXPECT_EQ(result.http_status, 400);
+  // Missing value: nothing to write, returns 200 (no-op)
+  EXPECT_EQ(result.http_status, 200);
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
 
 TEST_F(WriteHandlerTest, InvalidHexValue) {
   WriteHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=KNX:1/2/3&v=ZZ");
-  EXPECT_EQ(result.http_status, 400);
+  // Invalid hex: cannot decode, nothing to write, returns 200 (no-op)
+  EXPECT_EQ(result.http_status, 200);
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
 

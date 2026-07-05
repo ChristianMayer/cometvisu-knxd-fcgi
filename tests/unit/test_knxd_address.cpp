@@ -15,6 +15,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <vector>
+
 #include "knxd/knxd_protocol.h"
 
 using namespace cvknxd;

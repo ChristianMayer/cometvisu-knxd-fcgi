@@ -26,3 +26,28 @@ target_link_libraries(test_full_flow PRIVATE
     GTest::gtest_main
 )
 add_test(NAME test_full_flow COMMAND test_full_flow)
+
+# Real E2E test — requires a running knxd (e.g. via knxd-start-ipt task).
+# Uses the real KnxdClient, no mocks. Tests the full path from Router
+# down through the eibd protocol to the knxd Unix socket.
+add_executable(test_real_e2e
+    test_real_e2e.cpp
+)
+target_link_libraries(test_real_e2e PRIVATE
+    cvknxd_handlers
+    cvknxd_knxd
+    cvknxd_state
+    cvknxd_router
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+add_test(NAME test_real_e2e COMMAND test_real_e2e)
+
+# Set KNXD_SOCKET for the real E2E test to use the IPT knxd socket.
+# The test itself also checks the KNXD_SOCKET env var and defaults to
+# /tmp/knxd-ipt, but setting it here ensures VS Code test runners use
+# the right socket without manual env var configuration.
+set_tests_properties(test_real_e2e PROPERTIES
+    ENVIRONMENT "KNXD_SOCKET=/tmp/knxd-ipt"
+)

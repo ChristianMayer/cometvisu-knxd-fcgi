@@ -18,8 +18,14 @@
 #include <poll.h>
 
 #include <cerrno>
+#include <charconv>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "knxd/knxd_client.h"
 #include "knxd/knxd_protocol.h"
@@ -39,24 +45,23 @@ std::string ReadHandler::generate_index() {
 }
 
 std::optional<int> ReadHandler::parse_timeout(std::string_view t_str) {
-  if (t_str.empty())
-    return std::nullopt;
-  try {
-    std::string s{t_str};
-    size_t pos = 0;
-    int val = std::stoi(s, &pos);
-    if (pos != s.size())
-      return std::nullopt;  // trailing garbage
-    return val;
-  } catch (const std::invalid_argument&) {
-    return std::nullopt;
-  } catch (const std::out_of_range&) {
+  if (t_str.empty()) {
     return std::nullopt;
   }
+  int val = 0;
+  const auto [ptr, ec] = std::from_chars(t_str.data(), t_str.data() + t_str.size(), val);
+  if (ec != std::errc{}) {
+    return std::nullopt;
+  }
+  // Check for trailing garbage
+  if (ptr != t_str.data() + t_str.size()) {
+    return std::nullopt;
+  }
+  return val;
 }
 
 ReadResult ReadHandler::handle(std::string_view query_string) {
-  QueryString params{query_string};
+  const QueryString params{query_string};
   ReadResult result;
 
   // ---- Get addresses first (before session check, so 400 takes priority) ----
@@ -102,13 +107,75 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     return result;
   }
 
-  // ---- Long-poll mode: no timeout parameter ----
+  // ---- Decide: COMET poll, cache-only, or cache-then-COMET ----
+  bool do_comet_poll = false;
+
   if (!timeout.has_value()) {
-    // ---- Drain any telegrams already buffered (shared by mock and real paths) ----
+    // No t parameter → pure COMET: block until telegram or longpoll timeout.
+    do_comet_poll = true;
+  } else {
+    const int t_val = *timeout;
+
+    if (t_val < 0) {
+      // ---- t < 0: cache-only, non-blocking, always returns 200 ----
+      JsonBuilder json;
+      json.start_object();
+      json.add_key("d");
+      json.start_object();
+
+      for (auto addr : eib_addrs) {
+        auto data = knxd_.cache_read(addr, true);  // nowait
+        if (data) {
+          auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(addr)};
+          json.add_string(cv_addr.to_cometvisu(), hex_encode(data->data(), data->size()));
+        }
+      }
+
+      json.end_object();
+      json.add_string("i", generate_index());
+      json.end_object();
+      result.body = json.take();
+      return result;
+    }
+
+    // ---- t >= 0: data freshness timeout — first try cache ----
+    // t defines how old the cached data may be (not a connection timeout).
+    // The connection always uses the generic longpoll_timeout for blocking.
+    JsonBuilder json;
+    json.start_object();
+    json.add_key("d");
+    json.start_object();
+    bool any_found = false;
+
+    for (auto addr : eib_addrs) {
+      auto data = knxd_.cache_read(addr, (t_val == 0) ? false : true);
+      if (data) {
+        auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(addr)};
+        json.add_string(cv_addr.to_cometvisu(), hex_encode(data->data(), data->size()));
+        any_found = true;
+      }
+    }
+
+    json.end_object();
+    json.add_string("i", generate_index());
+    json.end_object();
+
+    if (any_found) {
+      result.body = json.take();
+      return result;
+    }
+
+    // Cache miss — fall through to COMET poll.
+    do_comet_poll = true;
+  }
+
+  // ---- COMET poll (shared by pure COMET and t>=0 cache-miss) ----
+  if (do_comet_poll) {
+    // ---- Drain any telegrams already buffered ----
     // These may have arrived during open_group_socket() or previous cache_read()
     // calls and sit in the application-level read buffer, invisible to poll().
     {
-      uint16_t recv_addr;
+      uint16_t recv_addr = 0;
       std::vector<uint8_t> apdu_data;
       while (knxd_.poll_group_telegram(recv_addr, apdu_data)) {
         if (eib_addrs.find(recv_addr) != eib_addrs.end()) {
@@ -128,7 +195,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     }
 
     // ---- Check if we have a real socket fd for poll() ----
-    int knxd_fd = knxd_.get_fd();
+    const int knxd_fd = knxd_.get_fd();
     if (knxd_fd < 0) {
       // No real fd (e.g., mock): buffered data already drained above,
       // no match found — return empty immediately.
@@ -153,27 +220,29 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
       if (remaining <= 0)
         break;  // timeout
 
-      struct pollfd pfd;
+      struct pollfd pfd = {};
       pfd.fd = knxd_fd;
       pfd.events = POLLIN;
       pfd.revents = 0;
 
       int poll_ret = ::poll(&pfd, 1, static_cast<int>(remaining));
       if (poll_ret < 0) {
-        if (errno == EINTR)
+        if (errno == EINTR) {
           continue;
+        }
         break;  // error
       }
-      if (poll_ret == 0)
+      if (poll_ret == 0) {
         break;  // timeout
+      }
 
       // Check for hangup or error before processing data
-      if (pfd.revents & (POLLHUP | POLLERR)) {
+      if ((pfd.revents & (POLLHUP | POLLERR)) != 0) {
         break;
       }
 
-      if (pfd.revents & POLLIN) {
-        uint16_t recv_addr;
+      if ((pfd.revents & POLLIN) != 0) {
+        uint16_t recv_addr = 0;
         std::vector<uint8_t> apdu_data;
 
         while (knxd_.poll_group_telegram(recv_addr, apdu_data)) {
@@ -206,42 +275,8 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     return result;
   }
 
-  // ---- Non-long-poll: timeout provided — query knxd's built-in cache ----
-  int t_val = *timeout;
-  JsonBuilder json;
-  json.start_object();
-  json.add_key("d");
-  json.start_object();
-
-  bool any_found = false;
-
-  for (auto addr : eib_addrs) {
-    std::optional<std::vector<uint8_t>> data;
-
-    if (t_val > 0 || t_val == 0) {
-      // Use knxd's built-in cache (delegates to knxd's group cache)
-      data = knxd_.cache_read(addr, (t_val == 0) ? false : true);
-    } else {
-      // t_val < 0: cache only, non-blocking
-      data = knxd_.cache_read(addr, true);
-    }
-
-    if (data) {
-      auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(addr)};
-      json.add_string(cv_addr.to_cometvisu(), hex_encode(data->data(), data->size()));
-      any_found = true;
-    }
-  }
-
-  json.end_object();
-  json.add_string("i", generate_index());
-  json.end_object();
-
-  if (!any_found) {
-    result.http_status = 404;
-  }
-
-  result.body = json.take();
+  // Should never reach here, but be defensive.
+  result.body = "{}";
   return result;
 }
 

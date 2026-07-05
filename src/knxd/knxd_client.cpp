@@ -383,6 +383,22 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
     return true;
   }
 
+  if (msg_type == EibMessageType::GROUP_PACKET && msg_data.size() >= 6) {
+    // Format from injected telegrams (e.g. knxtool groupswrite local:):
+    // src_pa(2) + dst_ga(2) + apdu...
+    // Note: this differs from GROUP_PACKET we send, which has format
+    // [dst_ga(2)][apdu(N)]. knxd forwards injected telegrams with the
+    // source PA prepended.
+    out_group_addr = static_cast<uint16_t>((msg_data[2] << 8) | msg_data[3]);
+    out_apdu.assign(msg_data.begin() + 4, msg_data.end());
+
+    DebugLog::knxd_recv("group_packet_injected",
+                        KnxGroupAddress::from_eibaddr(out_group_addr).to_string(),
+                        hex_encode(out_apdu.data(), out_apdu.size()));
+
+    return true;
+  }
+
   return false;
 }
 

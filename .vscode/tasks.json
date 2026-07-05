@@ -160,6 +160,48 @@
       "group": "build",
       "problemMatcher": [],
       "detail": "Reconfigure from scratch (removes CMakeCache.txt first)"
+    },
+    // ============================================================
+    // knxd background tasks
+    // ============================================================
+    {
+      "label": "knxd-start-ipt",
+      "type": "shell",
+      "command": "${workspaceFolder}/tools/start-knxd-ipt.sh",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": [
+          {
+            "regexp": "\\[start-knxd\\] knxd ready on (.+)",
+            "kind": "file",
+            "file": 1,
+            "message": 1
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "\\[start-knxd\\] Starting knxd with:",
+          "endsPattern": "\\[start-knxd\\] knxd ready on .+"
+        }
+      },
+      "detail": "Start knxd with IP Routing (no hardware needed, uses unlikely multicast address)"
+    },
+    {
+      "label": "knxd-stop",
+      "type": "shell",
+      "command": "pkill knxd 2>/dev/null; echo 'knxd stopped'",
+      "problemMatcher": [],
+      "detail": "Stop all knxd processes"
+    },
+    {
+      "label": "build-and-start-knxd-ipt",
+      "dependsOn": [
+        "cmake-build-main",
+        "knxd-start-ipt"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "detail": "Build the project, then start knxd with IP Routing (no hardware needed)"
     }
   ],
   "inputs": [

@@ -40,6 +40,196 @@
       "miDebuggerPath": "/usr/bin/gdb"
     },
     // ============================================================
+    // Run / Debug against a real knxd instance
+    // ============================================================
+    //
+    // These configurations start the application in standalone mode:
+    // it opens a TCP FastCGI socket on port 9000 and connects to knxd
+    // at the socket path specified via the KNXD_SOCKET env var
+    // (default /run/knx).
+    //
+    // Once the app is running, test with the helper script:
+    //
+    //   ./tools/fcgi-curl.sh GET '/r?a=KNX:1/2/3&t=5'
+    //   ./tools/fcgi-curl.sh POST '/l' 'user=admin&pass=admin'
+    //   ./tools/fcgi-curl.sh POST '/w' 'knx=1/2/3&data=0c6f&type=write'
+    //
+    // Or using cgi-fcgi directly:
+    //
+    //   REQUEST_METHOD=GET QUERY_STRING="a=KNX:1/2/3&t=5" \
+    //     cgi-fcgi -bind -connect 127.0.0.1:9000
+    //
+    {
+      "name": "Run against real knxd",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/src/cometvisu-knxd-fcgi",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        {
+          "name": "FCGI_SOCKET",
+          "value": ":9000"
+        },
+        {
+          "name": "DEBUG_BACKEND",
+          "value": "1"
+        },
+        {
+          "name": "KNXD_SOCKET",
+          "value": "/run/knx"
+        },
+        {
+          "name": "LONGPOLL_TIMEOUT_SEC",
+          "value": "300"
+        }
+      ],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "cmake-build-main",
+      "miDebuggerPath": "/usr/bin/gdb"
+    },
+    {
+      "name": "Debug against real knxd",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/src/cometvisu-knxd-fcgi",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        {
+          "name": "FCGI_SOCKET",
+          "value": ":9000"
+        },
+        {
+          "name": "DEBUG_BACKEND",
+          "value": "1"
+        },
+        {
+          "name": "KNXD_SOCKET",
+          "value": "/run/knx"
+        },
+        {
+          "name": "LONGPOLL_TIMEOUT_SEC",
+          "value": "300"
+        }
+      ],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "cmake-build-main",
+      "miDebuggerPath": "/usr/bin/gdb"
+    },
+    // ============================================================
+    // Run / Debug with local knxd (no bus, for E2E testing)
+    // ============================================================
+    //
+    // These configurations start a local knxd instance as a pre-launch
+    // step, using KNX IP Routing to an unlikely multicast address
+    // (239.255.255.250). knxd starts without any physical hardware.
+    //
+    // PA: 1.1.220 for knxd, client addresses 1.1.221:3.
+    // Socket: /tmp/knxd-ipt.
+    //
+    // Since there is no actual KNX bus:
+    //   • Writes → sent to multicast (no-op), return 200
+    //   • Cache reads → return 404 (unless previously cached by a real bus)
+    //   • Long-poll → waits for telegrams, returns empty after timeout
+    //
+    // When done, run the "knxd-stop" task or: pkill knxd
+    //
+    {
+      "name": "Run with local knxd (E2E)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/src/cometvisu-knxd-fcgi",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        {
+          "name": "FCGI_SOCKET",
+          "value": ":9000"
+        },
+        {
+          "name": "DEBUG_BACKEND",
+          "value": "1"
+        },
+        {
+          "name": "KNXD_SOCKET",
+          "value": "/tmp/knxd-ipt"
+        },
+        {
+          "name": "LONGPOLL_TIMEOUT_SEC",
+          "value": "300"
+        }
+      ],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "build-and-start-knxd-ipt",
+      "miDebuggerPath": "/usr/bin/gdb"
+    },
+    {
+      "name": "Debug with local knxd (E2E)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/src/cometvisu-knxd-fcgi",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        {
+          "name": "FCGI_SOCKET",
+          "value": ":9000"
+        },
+        {
+          "name": "DEBUG_BACKEND",
+          "value": "1"
+        },
+        {
+          "name": "KNXD_SOCKET",
+          "value": "/tmp/knxd-ipt"
+        },
+        {
+          "name": "LONGPOLL_TIMEOUT_SEC",
+          "value": "300"
+        }
+      ],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "build-and-start-knxd-ipt",
+      "miDebuggerPath": "/usr/bin/gdb"
+    },
+    // ============================================================
     // Unit tests -- individual test executables
     // ============================================================
     {

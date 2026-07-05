@@ -64,9 +64,11 @@ TEST_F(ReadHandlerTest, ReadFromKnxdCacheTimeoutZero) {
 TEST_F(ReadHandlerTest, NegativeTimeoutCacheMiss) {
   ReadHandler handler(knxd_, sessions_);
 
-  // No knxd cache value — should return 404 (no data found)
+  // No knxd cache value — t < 0 returns 200 with empty data
   auto result = handler.handle("a=KNX:1/2/3&t=-1");
-  EXPECT_EQ(result.http_status, 404);
+  EXPECT_EQ(result.http_status, 200);
+  // Should have empty "d" object
+  EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, NoAddresses) {

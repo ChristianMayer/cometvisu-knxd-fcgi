@@ -30,16 +30,12 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
   QueryString params{query_string};
   WriteResult result;
 
-  // ---- Parameter validation first (400 takes priority over 401) ----
+  // ---- Parameter extraction ----
   auto addresses = params.get_all("a");
-  if (addresses.empty()) {
-    result.http_status = 400;
-    return result;
-  }
-
   auto value_opt = params.get("v");
-  if (!value_opt) {
-    result.http_status = 400;
+
+  // Missing addresses or value: nothing to write, return 200 (no-op).
+  if (addresses.empty() || !value_opt) {
     return result;
   }
 
@@ -51,30 +47,32 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
     }
   }
 
-  // Decode hex value
+  // Decode hex value — if invalid, nothing to write, return 200.
   auto data = hex_decode(*value_opt);
   if (data.empty() && !value_opt->empty()) {
-    result.http_status = 400;  // invalid hex
     return result;
   }
 
   // Build APDU for write
   auto apdu = build_apdu(ApduType::Write, data);
 
-  // Write to each address — knxd's built-in cache is auto-updated
+  // Write to each address
+  bool any_valid = false;
   bool any_success = false;
   for (auto addr_str : addresses) {
     auto parsed = KnxAddress::from_cometvisu(addr_str);
     if (!parsed)
       continue;
 
+    any_valid = true;
     uint16_t eibaddr = parsed->group.to_eibaddr();
     if (knxd_.send_group_packet(eibaddr, apdu)) {
       any_success = true;
     }
   }
 
-  if (!any_success) {
+  // 404 only when all addresses had an invalid format.
+  if (!any_valid && !addresses.empty()) {
     result.http_status = 404;
   }
 

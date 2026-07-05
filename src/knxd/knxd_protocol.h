@@ -45,6 +45,7 @@ struct KnxGroupAddress {
   [[nodiscard]] static KnxGroupAddress from_eibaddr(uint16_t addr);
 
   bool operator==(const KnxGroupAddress&) const = default;
+  bool operator!=(const KnxGroupAddress& other) const { return !(*this == other); }
 };
 
 /// KNX address namespace prefix and group address.
