@@ -29,7 +29,7 @@ public:
 
   /// Process a login request.
   /// @param query_string Raw QUERY_STRING from FCGI.
-  /// @return JSON response body: {"v":"1.0","s":"SESSION_ID"}
+  /// @return JSON response body: {"v":"0.0.2","s":"SESSION_ID"}
   [[nodiscard]] std::string handle(std::string_view query_string);
 
 private:

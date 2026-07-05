@@ -25,7 +25,7 @@ TEST(LoginHandlerTest, AnonymousLogin) {
   LoginHandler handler(sessions);
 
   std::string response = handler.handle("");
-  EXPECT_NE(response.find("\"v\":\"1.0\""), std::string::npos);
+  EXPECT_NE(response.find("\"v\":\"0.0.2\""), std::string::npos);
   EXPECT_NE(response.find("\"s\":\"0\""), std::string::npos);
 }
 
@@ -34,7 +34,7 @@ TEST(LoginHandlerTest, AuthenticatedLogin) {
   LoginHandler handler(sessions);
 
   std::string response = handler.handle("u=admin&p=secret");
-  EXPECT_NE(response.find("\"v\":\"1.0\""), std::string::npos);
+  EXPECT_NE(response.find("\"v\":\"0.0.2\""), std::string::npos);
   // Session ID must NOT be "0"
   EXPECT_EQ(response.find("\"s\":\"0\""), std::string::npos);
   // Session ID should be a non-empty hex string
@@ -64,7 +64,7 @@ TEST(LoginHandlerTest, ValidJsonStructure) {
   EXPECT_EQ(response.front(), '{');
   EXPECT_EQ(response.back(), '}');
   // Must have exactly v and s keys
-  EXPECT_NE(response.find("\"v\":\"1.0\""), std::string::npos);
+  EXPECT_NE(response.find("\"v\":\"0.0.2\""), std::string::npos);
   EXPECT_NE(response.find("\"s\":"), std::string::npos);
 }
 

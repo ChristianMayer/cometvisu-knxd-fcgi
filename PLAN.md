@@ -70,7 +70,7 @@ using the **eibd client binary protocol**.
 
 #### Login (`GET /l`)
 - Optional query params: `u` (user), `p` (password), `d` (device)
-- Response: `{"v":"1.0","s":"SESSION_ID"}`
+- Response: `{"v":"0.0.2","s":"SESSION_ID"}`
 - Anonymous sessions: session ID is `"0"`
 
 #### Read (`GET /r`)

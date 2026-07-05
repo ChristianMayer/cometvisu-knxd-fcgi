@@ -33,7 +33,7 @@ std::string LoginHandler::handle(std::string_view query_string) {
 
   JsonBuilder json;
   json.start_object();
-  json.add_string("v", "1.0");
+  json.add_string("v", "0.0.2");
   json.add_string("s", session_id);
   json.end_object();
 
