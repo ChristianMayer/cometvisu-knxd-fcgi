@@ -18,19 +18,38 @@
 namespace cvknxd {
 
 std::string_view FcgiRequest::path() const {
-  // path_info is the primary source for the endpoint path
-  // (e.g. SCRIPT_NAME=/cgi-bin/visu, PATH_INFO=/l)
+  // PATH_INFO is the primary source for the endpoint path.
+  // e.g. SCRIPT_NAME=/cgi-bin/visu, PATH_INFO=/l
   if (!path_info.empty())
     return std::string_view{path_info};
 
   // Fall back to request_uri minus query string
-  if (request_uri.empty())
+  std::string_view uri_path;
+  if (!request_uri.empty()) {
+    auto qpos = request_uri.find('?');
+    uri_path = (qpos == std::string::npos) ? std::string_view{request_uri}
+                                           : std::string_view{request_uri.data(), qpos};
+  } else {
     return {};
-  auto qpos = request_uri.find('?');
-  if (qpos == std::string::npos) {
-    return std::string_view{request_uri};
   }
-  return std::string_view{request_uri.data(), qpos};
+
+  // If SCRIPT_NAME is a prefix of uri_path, extract the trailing part.
+  // e.g. SCRIPT_NAME=/cgi-bin/visu, uri_path=/cgi-bin/visu/l  →  /l
+  if (!script_name.empty() && uri_path.size() >= script_name.size() &&
+      uri_path.compare(0, script_name.size(), script_name) == 0) {
+    std::string_view trail = uri_path.substr(script_name.size());
+    if (!trail.empty())
+      return trail;
+    // SCRIPT_NAME consumes the entire URI path (e.g. SCRIPT_NAME=/cgi-bin/l,
+    // uri_path=/cgi-bin/l).  Use the last path component of SCRIPT_NAME
+    // itself as the endpoint identifier.
+    auto last_slash = script_name.rfind('/');
+    if (last_slash != std::string_view::npos) {
+      return std::string_view{script_name}.substr(last_slash);
+    }
+  }
+
+  return uri_path;
 }
 
 }  // namespace cvknxd

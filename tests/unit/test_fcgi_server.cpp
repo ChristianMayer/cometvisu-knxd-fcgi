@@ -14,13 +14,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include <gtest/gtest.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <cstdlib>
 #include <functional>
 #include <string>
-
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include "fcgi/fcgi_server.h"
 
@@ -118,4 +117,65 @@ TEST(FcgiServerTest, ListenRejectsColonOnly) {
     _exit(result ? 1 : 0);
   });
   EXPECT_GE(code, 0) << "Child was killed by signal, expected clean exit";
+}
+
+// ============================================================
+// FcgiRequest::path() tests
+// ============================================================
+
+TEST(FcgiRequestPathTest, PathInfoIsUsedWhenSet) {
+  FcgiRequest req;
+  req.path_info = "/l";
+  req.script_name = "/cgi-bin/visu";
+  req.request_uri = "/cgi-bin/visu/l?a=1";
+
+  EXPECT_EQ(req.path(), "/l");
+}
+
+TEST(FcgiRequestPathTest, ScriptNameStrippedFromUriPath) {
+  FcgiRequest req;
+  req.script_name = "/cgi-bin/visu";
+  req.request_uri = "/cgi-bin/visu/l";
+
+  EXPECT_EQ(req.path(), "/l");
+}
+
+TEST(FcgiRequestPathTest, ScriptNameConsumesEntireUriPath) {
+  // When SCRIPT_NAME itself contains the endpoint (e.g. /cgi-bin/l),
+  // the last path component of SCRIPT_NAME is used.
+  FcgiRequest req;
+  req.script_name = "/cgi-bin/l";
+  req.request_uri = "/cgi-bin/l?u=USER&p=PASSWORD&d=DEVICE";
+
+  EXPECT_EQ(req.path(), "/l");
+}
+
+TEST(FcgiRequestPathTest, ScriptNameConsumesUriPathWithQueryString) {
+  // Same as above but PATH_INFO explicitly empty
+  FcgiRequest req;
+  req.script_name = "/cgi-bin/r";
+  req.request_uri = "/cgi-bin/r?a=1/2/3&t=5";
+
+  EXPECT_EQ(req.path(), "/r");
+}
+
+TEST(FcgiRequestPathTest, DirectRequestWithoutPrefix) {
+  // When SCRIPT_NAME is empty, the full URI path is returned
+  FcgiRequest req;
+  req.request_uri = "/l";
+
+  EXPECT_EQ(req.path(), "/l");
+}
+
+TEST(FcgiRequestPathTest, DeepPathScriptNameConsumesUri) {
+  FcgiRequest req;
+  req.script_name = "/some/deep/path/w";
+  req.request_uri = "/some/deep/path/w?a=1&b=2";
+
+  EXPECT_EQ(req.path(), "/w");
+}
+
+TEST(FcgiRequestPathTest, EmptyUriReturnsEmpty) {
+  FcgiRequest req;
+  EXPECT_EQ(req.path(), "");
 }

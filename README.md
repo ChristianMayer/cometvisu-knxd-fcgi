@@ -51,6 +51,32 @@ FCGI_SOCKET=/tmp/cometvisu-fcgi.sock ./build/src/cometvisu-knxd-fcgi
 | `LONGPOLL_TIMEOUT_SEC`| `300`      | Max seconds to wait in long-poll `/r`    |
 | `DEBUG_BACKEND`       | *(unset)*  | Set to `1` to enable debug logging to stderr |
 
+### FastCGI environment variables
+
+These are standard
+[CGI variables](https://fastcgi-archives.github.io/FastCGI_Specification.html)
+provided by the web server. The application reads them automatically — you do
+not need to set them yourself.
+
+| Variable          | Description                                        |
+|-------------------|----------------------------------------------------|
+| `REQUEST_METHOD`  | HTTP method: `GET`, `POST`, or `PUT`               |
+| `REQUEST_URI`     | Full request URI, e.g. `/cgi-bin/l?u=USER&p=PASS`  |
+| `QUERY_STRING`    | Query string portion, e.g. `u=USER&p=PASS&d=DEVICE`|
+| `SCRIPT_NAME`     | Virtual path to the script, e.g. `/cgi-bin/l`     |
+| `PATH_INFO`       | Extra path after the script name, e.g. `/l`       |
+| `CONTENT_TYPE`    | MIME type of the request body (POST/PUT)           |
+| `CONTENT_LENGTH`  | Size of the request body in bytes (POST/PUT)       |
+| `SERVER_PROTOCOL` | Protocol string, e.g. `HTTP/1.1`                   |
+
+> **Routing note**: The application determines which handler (`/l`, `/r`,
+> `/w`) to invoke by inspecting `PATH_INFO` first. If `PATH_INFO` is empty,
+> it strips `SCRIPT_NAME` from `REQUEST_URI` to derive the path. When
+> `SCRIPT_NAME` itself ends with the endpoint (e.g. `/cgi-bin/l`), the last
+> path component is used as the handler key. This means all common web-server
+> configurations — `ScriptAlias`, `fastcgi_pass` with `SCRIPT_NAME` pointing
+> to a directory or directly to the binary — work out of the box.
+
 ### Debug mode
 
 Set `DEBUG_BACKEND=1` (or `true`/`yes`/`on`) to enable detailed debug output to
