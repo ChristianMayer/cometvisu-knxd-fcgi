@@ -138,7 +138,33 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
       return result;
     }
 
-    // ---- t >= 0: data freshness timeout — first try cache ----
+    if (t_val == 0) {
+      // ---- t == 0: immediate response — return cached values, send reads for uncached ----
+      JsonBuilder json;
+      json.start_object();
+      json.add_key("d");
+      json.start_object();
+
+      for (auto addr : eib_addrs) {
+        auto data = knxd_.cache_read(addr, true);  // nowait: non-blocking
+        if (data) {
+          auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(addr)};
+          json.add_string(cv_addr.to_cometvisu(), hex_encode(data->data(), data->size()));
+        } else {
+          // Not in cache — send a read telegram to request the value from the bus
+          auto read_apdu = build_apdu(ApduType::Read, {});
+          knxd_.send_group_packet(addr, read_apdu);
+        }
+      }
+
+      json.end_object();
+      json.add_string("i", generate_index());
+      json.end_object();
+      result.body = json.take();
+      return result;
+    }
+
+    // ---- t > 0: data freshness timeout — first try cache ----
     // t defines how old the cached data may be (not a connection timeout).
     // The connection always uses the generic longpoll_timeout for blocking.
     JsonBuilder json;
@@ -148,7 +174,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     bool any_found = false;
 
     for (auto addr : eib_addrs) {
-      auto data = knxd_.cache_read(addr, (t_val == 0) ? false : true);
+      auto data = knxd_.cache_read(addr, true);  // nowait
       if (data) {
         auto cv_addr = KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(addr)};
         json.add_string(cv_addr.to_cometvisu(), hex_encode(data->data(), data->size()));

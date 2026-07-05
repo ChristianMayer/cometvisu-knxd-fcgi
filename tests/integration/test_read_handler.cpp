@@ -59,6 +59,50 @@ TEST_F(ReadHandlerTest, ReadFromKnxdCacheTimeoutZero) {
   EXPECT_EQ(result.http_status, 200);
   EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
+  // Must include the index
+  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  // Must NOT block — no read telegram sent because value was cached
+  EXPECT_TRUE(knxd_.sent_packets().empty());
+}
+
+TEST_F(ReadHandlerTest, TimeoutZeroCacheMissSendsReadTelegram) {
+  ReadHandler handler(knxd_, sessions_);
+
+  // No cached value for 1/2/3
+  auto result = handler.handle("a=KNX:1/2/3&t=0");
+
+  EXPECT_EQ(result.http_status, 200);
+  // Should have empty "d" object and an index (immediate response)
+  EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  // Should have sent a read telegram for the uncached address
+  ASSERT_EQ(knxd_.sent_packets().size(), 1u);
+  EXPECT_EQ(knxd_.sent_packets()[0].group_addr, 0x0A03);
+  // APDU should be A_GroupValue_Read: {0x00, 0x00}
+  EXPECT_EQ(knxd_.sent_packets()[0].apdu, std::vector<uint8_t>({0x00, 0x00}));
+}
+
+TEST_F(ReadHandlerTest, TimeoutZeroMixedCacheAndUncached) {
+  ReadHandler handler(knxd_, sessions_);
+
+  // 1/2/3 is cached, 1/3/4 is NOT cached
+  knxd_.set_cached_value(0x0A03, {0x42});
+
+  auto result = handler.handle("a=KNX:1/2/3&a=KNX:1/3/4&t=0");
+
+  EXPECT_EQ(result.http_status, 200);
+  // Cached address should be in response
+  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("42"), std::string::npos);
+  // Uncached address should NOT be in response
+  EXPECT_EQ(result.body.find("KNX:1/3/4"), std::string::npos);
+  // Index must be included
+  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+
+  // Should have sent exactly one read telegram for the uncached address
+  ASSERT_EQ(knxd_.sent_packets().size(), 1u);
+  EXPECT_EQ(knxd_.sent_packets()[0].group_addr, 0x0B04);
+  EXPECT_EQ(knxd_.sent_packets()[0].apdu, std::vector<uint8_t>({0x00, 0x00}));
 }
 
 TEST_F(ReadHandlerTest, NegativeTimeoutCacheMiss) {
