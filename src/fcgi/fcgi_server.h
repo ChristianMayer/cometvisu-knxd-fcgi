@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <fcgiapp.h>
+
 #include <functional>
 #include <string>
 
@@ -33,7 +35,7 @@ using RequestHandler = std::function<FcgiResponse(const FcgiRequest&)>;
 ///   1. Spawn-fcgi mode (default): reads/writes FCGI on stdin/stdout as set up
 ///      by spawn-fcgi or a web server.
 ///   2. Direct socket mode: call listen() to open a TCP or Unix socket for
-///      direct FCGI connections, then run() accepts from both stdin and the socket.
+///      direct FCGI connections. run() accepts from the socket instead of stdin.
 class FcgiServer {
 public:
   FcgiServer();
@@ -60,11 +62,13 @@ public:
 private:
   RequestHandler handler_;
   int listen_fd_ = -1;
+  FCGX_Request request_{};
 
   /// Read all FCGI parameters from stdin into an FcgiRequest.
   [[nodiscard]] static FcgiRequest read_request();
-  /// Write an FcgiResponse to stdout in FCGI format.
-  static void write_response(const FcgiResponse& response);
+  /// Write an FcgiResponse to the appropriate output stream.
+  /// Uses FCGX_Request::out when in direct socket mode, FCGI stdout otherwise.
+  void write_response(const FcgiResponse& response);
 };
 
 }  // namespace cvknxd

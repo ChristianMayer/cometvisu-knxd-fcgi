@@ -24,6 +24,10 @@
 
 #include "../util/debug_log.h"
 
+// POSIX environment pointer — needed for direct socket mode to make
+// request parameters available via getenv() after FCGX_Accept_r().
+extern char** environ;
+
 namespace cvknxd {
 
 /// Maximum allowed request body size (64 KB).
@@ -58,16 +62,44 @@ int FcgiServer::run() {
     return 1;
   }
 
-  while (FCGI_Accept() >= 0) {
-    FcgiRequest req = read_request();
+  if (listen_fd_ >= 0) {
+    // ---- Direct socket mode ----
+    // Accept FastCGI connections on our own Unix/TCP socket.
+    // This is used when running standalone (e.g. via FCGI_SOCKET env var).
+    if (FCGX_InitRequest(&request_, listen_fd_, 0) != 0) {
+      std::cerr << "[ERROR] FCGX_InitRequest failed\n";
+      return 1;
+    }
 
-    DebugLog::http_request(req.request_method, req.request_uri);
+    while (FCGX_Accept_r(&request_) >= 0) {
+      // Make environment variables accessible via getenv() for read_request()
+      environ = request_.envp;
 
-    FcgiResponse resp = handler_(req);
+      FcgiRequest req = read_request();
+      DebugLog::http_request(req.request_method, req.request_uri);
 
-    DebugLog::http_response(resp.status_code, resp.body);
+      FcgiResponse resp = handler_(req);
+      DebugLog::http_response(resp.status_code, resp.body);
 
-    write_response(resp);
+      write_response(resp);
+
+      FCGX_Finish_r(&request_);
+    }
+  } else {
+    // ---- Spawn-fcgi mode ----
+    // Accept FastCGI connections from stdin/stdout as set up by spawn-fcgi
+    // or the web server.
+    while (FCGI_Accept() >= 0) {
+      FcgiRequest req = read_request();
+
+      DebugLog::http_request(req.request_method, req.request_uri);
+
+      FcgiResponse resp = handler_(req);
+
+      DebugLog::http_response(resp.status_code, resp.body);
+
+      write_response(resp);
+    }
   }
 
   return 0;
@@ -126,27 +158,25 @@ FcgiRequest FcgiServer::read_request() {
 }
 
 void FcgiServer::write_response(const FcgiResponse& response) {
-  // Status header
-  std::string status_line = "Status: " + std::to_string(response.status_code) + "\r\n";
+  // Build the full HTTP response as a single string.
+  std::string output;
+  output.reserve(256 + response.body.size());
 
-  // Content-Type header
-  std::string content_type_line = "Content-Type: " + response.content_type + "; charset=utf-8\r\n";
+  output += "Status: " + std::to_string(response.status_code) + "\r\n";
+  output += "Content-Type: " + response.content_type + "; charset=utf-8\r\n";
+  output += "Content-Length: " + std::to_string(response.body.size()) + "\r\n";
+  output += "\r\n";
+  output += response.body;
 
-  // Content-Length header
-  std::string content_length_line =
-      "Content-Length: " + std::to_string(response.body.size()) + "\r\n";
-
-  // Blank line separator
-  std::string header_end = "\r\n";
-
-  // Write to FCGI stdout.
-  // Note: FCGI_fwrite takes non-const void* (C API), but does not modify the buffer.
-  // The const_cast is safe here as the library only reads from the buffer.
-  FCGI_fwrite(const_cast<char*>(status_line.data()), 1, status_line.size(), stdout);
-  FCGI_fwrite(const_cast<char*>(content_type_line.data()), 1, content_type_line.size(), stdout);
-  FCGI_fwrite(const_cast<char*>(content_length_line.data()), 1, content_length_line.size(), stdout);
-  FCGI_fwrite(const_cast<char*>(header_end.data()), 1, header_end.size(), stdout);
-  FCGI_fwrite(const_cast<char*>(response.body.data()), 1, response.body.size(), stdout);
+  if (listen_fd_ >= 0) {
+    // Direct socket mode: write to FCGX request output stream.
+    FCGX_PutStr(output.data(), static_cast<int>(output.size()), request_.out);
+  } else {
+    // Spawn-fcgi mode: write to FCGI stdout.
+    // Note: FCGI_fwrite takes non-const void* (C API), but does not modify the buffer.
+    // The const_cast is safe here as the library only reads from the buffer.
+    FCGI_fwrite(const_cast<char*>(output.data()), 1, output.size(), stdout);
+  }
 }
 
 }  // namespace cvknxd
