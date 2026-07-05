@@ -66,6 +66,15 @@ int FcgiServer::run() {
     // ---- Direct socket mode ----
     // Accept FastCGI connections on our own Unix/TCP socket.
     // This is used when running standalone (e.g. via FCGI_SOCKET env var).
+
+    // FCGX_Init() must be called before FCGX_Accept_r() — it sets the
+    // libInitialized flag and performs platform-specific setup (OS_LibInit).
+    // FCGX_InitRequest() alone does NOT mark the library as initialized.
+    if (FCGX_Init() != 0) {
+      std::cerr << "[ERROR] FCGX_Init failed\n";
+      return 1;
+    }
+
     if (FCGX_InitRequest(&request_, listen_fd_, 0) != 0) {
       std::cerr << "[ERROR] FCGX_InitRequest failed\n";
       return 1;
