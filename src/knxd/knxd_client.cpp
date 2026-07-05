@@ -245,9 +245,7 @@ bool KnxdClient::open_group_socket(bool write_only) {
 
   impl_->write_only_ = write_only;
 
-  uint8_t wo_byte = write_only ? 0xFF : 0x00;
-  std::vector<uint8_t> data = {wo_byte};
-  auto msg = build_eibd_message(EibMessageType::OPEN_GROUPCON, data);
+  auto msg = build_open_groupcon(write_only);
 
   DebugLog::knxd_send("open_group_socket", "-",
                       write_only ? "write_only=true" : "write_only=false");
@@ -281,13 +279,7 @@ bool KnxdClient::send_group_packet(uint16_t group_addr, const std::vector<uint8_
 
   DebugLog::knxd_send("group_packet", addr_str, "apdu=" + hex_encode(apdu.data(), apdu.size()));
 
-  std::vector<uint8_t> data;
-  data.reserve(2 + apdu.size());
-  data.push_back(static_cast<uint8_t>((group_addr >> 8) & 0xFF));
-  data.push_back(static_cast<uint8_t>(group_addr & 0xFF));
-  data.insert(data.end(), apdu.begin(), apdu.end());
-
-  auto msg = build_eibd_message(EibMessageType::GROUP_PACKET, data);
+  auto msg = build_group_packet(group_addr, apdu);
   return write_all(impl_->fd, msg.data(), msg.size());
 }
 
@@ -300,13 +292,10 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
 
   auto addr_str = KnxGroupAddress::from_eibaddr(group_addr).to_string();
 
-  uint16_t msg_type = nowait ? EibMessageType::CACHE_READ_NOWAIT : EibMessageType::CACHE_READ;
-  std::vector<uint8_t> data = {static_cast<uint8_t>((group_addr >> 8) & 0xFF),
-                               static_cast<uint8_t>(group_addr & 0xFF)};
-
   DebugLog::knxd_send("cache_read", addr_str, nowait ? "nowait=true" : "nowait=false");
 
-  auto msg = build_eibd_message(msg_type, data);
+  uint16_t msg_type = nowait ? EibMessageType::CACHE_READ_NOWAIT : EibMessageType::CACHE_READ;
+  auto msg = nowait ? build_cache_read_nowait(group_addr) : build_cache_read(group_addr);
   if (!write_all(impl_->fd, msg.data(), msg.size()))
     return std::nullopt;
 

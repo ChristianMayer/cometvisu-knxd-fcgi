@@ -19,6 +19,20 @@
 
 using namespace cvknxd;
 
+// ---- Helpers for extracting bytes from knxd constants at compile time ----
+// These avoid hard-coding knxd message type values (like 0x0026) in tests.
+// If knxd ever renumbers its message types, the tests adapt automatically
+// because the constants come from the knxd headers (<eibtypes.h>).
+
+namespace {
+constexpr uint8_t hi(uint16_t v) {
+  return static_cast<uint8_t>((v >> 8) & 0xFF);
+}
+constexpr uint8_t lo(uint16_t v) {
+  return static_cast<uint8_t>(v & 0xFF);
+}
+}  // namespace
+
 // ---- KnxGroupAddress ----
 
 TEST(KnxGroupAddressTest, FromStringValid) {
@@ -175,30 +189,171 @@ TEST(ApduTest, ParseResponse) {
   EXPECT_EQ(data[0], 0x1A);
 }
 
-// ---- EIBD Message ----
+// ---- EIBD Wire Format: Type-Specific Builders ----
+//
+// These tests verify the exact byte-level wire format of every message type
+// we send to knxd.  Each test calls the dedicated builder function (the same
+// one used in production code) and asserts every byte.
+//
+// Message type bytes are derived from knxd's <eibtypes.h> constants via the
+// EibMessageType namespace — so if knxd renumbers its types, the tests adapt
+// automatically.  Only the *structural* format (payload lengths, field order,
+// reserved bytes) is hard-coded, because that *is* the specification we are
+// testing against.
 
-TEST(EibdMessageTest, BuildGroupPacket) {
-  auto msg = build_eibd_message(0x0027, {0x0A, 0x03, 0x00, 0x80});
-  // Length: 2 (type) + 4 (data) = 6 bytes payload
-  EXPECT_EQ(msg[0], 0x00);  // len hi
-  EXPECT_EQ(msg[1], 0x06);  // len lo
-  EXPECT_EQ(msg[2], 0x00);  // type hi
-  EXPECT_EQ(msg[3], 0x27);  // type lo
-  EXPECT_EQ(msg[4], 0x0A);  // data
-  EXPECT_EQ(msg[5], 0x03);
-  EXPECT_EQ(msg[6], 0x00);
-  EXPECT_EQ(msg[7], 0x80);
+// -- EIB_OPEN_GROUPCON --
+
+TEST(EibdWireFormatTest, OpenGroupconWriteOnly) {
+  // knxd >= 0.14 expects a 5-byte payload for all EIB_OPEN_* types:
+  // [type:2][reserved/addr:2][write_only:1]
+  auto msg = build_open_groupcon(true);
+  // Wire: [len:2][type:2][reserved:2][write_only:1] = 7 bytes
+  EXPECT_EQ(msg.size(), 7);                              // 2 (len) + 5 (payload)
+  EXPECT_EQ(msg[0], 0x00);                               // len hi
+  EXPECT_EQ(msg[1], 0x05);                               // len lo = 5
+  EXPECT_EQ(msg[2], hi(EibMessageType::OPEN_GROUPCON));  // type hi
+  EXPECT_EQ(msg[3], lo(EibMessageType::OPEN_GROUPCON));  // type lo
+  EXPECT_EQ(msg[4], 0x00);                               // reserved hi
+  EXPECT_EQ(msg[5], 0x00);                               // reserved lo
+  EXPECT_EQ(msg[6], 0xFF);                               // write_only = true
 }
 
-TEST(EibdMessageTest, ParseGroupPacket) {
-  std::vector<uint8_t> raw = {0x00, 0x04, 0x00, 0x27, 0xAA, 0xBB};
+TEST(EibdWireFormatTest, OpenGroupconReadWrite) {
+  auto msg = build_open_groupcon(false);
+  EXPECT_EQ(msg.size(), 7);
+  EXPECT_EQ(msg[0], 0x00);
+  EXPECT_EQ(msg[1], 0x05);
+  EXPECT_EQ(msg[2], hi(EibMessageType::OPEN_GROUPCON));
+  EXPECT_EQ(msg[3], lo(EibMessageType::OPEN_GROUPCON));
+  EXPECT_EQ(msg[4], 0x00);
+  EXPECT_EQ(msg[5], 0x00);
+  EXPECT_EQ(msg[6], 0x00);  // write_only = false
+}
+
+// -- EIB_GROUP_PACKET --
+
+TEST(EibdWireFormatTest, GroupPacket) {
+  // Payload: [type:2][dest_addr:2][apdu:N]
+  // 1/2/3 = 0x0A03, APDU = {0x00, 0x80, 0x42}
+  std::vector<uint8_t> apdu = {0x00, 0x80, 0x42};
+  auto msg = build_group_packet(0x0A03, apdu);
+  // Wire: [len:2][type:2][addr:2][apdu:3] = 9 bytes
+  EXPECT_EQ(msg.size(), 9);
+  EXPECT_EQ(msg[0], 0x00);                              // len hi
+  EXPECT_EQ(msg[1], 0x07);                              // len lo = 7
+  EXPECT_EQ(msg[2], hi(EibMessageType::GROUP_PACKET));  // type hi
+  EXPECT_EQ(msg[3], lo(EibMessageType::GROUP_PACKET));  // type lo
+  EXPECT_EQ(msg[4], 0x0A);                              // addr hi (1/2/3 = 0x0A03)
+  EXPECT_EQ(msg[5], 0x03);                              // addr lo
+  EXPECT_EQ(msg[6], 0x00);                              // apdu[0]
+  EXPECT_EQ(msg[7], 0x80);                              // apdu[1]
+  EXPECT_EQ(msg[8], 0x42);                              // apdu[2]
+}
+
+TEST(EibdWireFormatTest, GroupPacketMultiByteApdu) {
+  // Temperature DPT 9.001: 2-byte value 0x0C6F
+  std::vector<uint8_t> apdu = {0x00, 0x80, 0x0C, 0x6F};
+  auto msg = build_group_packet(0x1F07, apdu);  // 31/7/7
+  EXPECT_EQ(msg.size(), 10);                    // 2 (len) + 8 (payload)
+  EXPECT_EQ(msg[0], 0x00);                      // len hi
+  EXPECT_EQ(msg[1], 0x08);                      // len lo = 8
+  EXPECT_EQ(msg[2], hi(EibMessageType::GROUP_PACKET));
+  EXPECT_EQ(msg[3], lo(EibMessageType::GROUP_PACKET));
+  EXPECT_EQ(msg[4], 0x1F);  // addr hi (31/7/7 = 0x1F07)
+  EXPECT_EQ(msg[5], 0x07);  // addr lo
+  EXPECT_EQ(msg[6], 0x00);  // apdu[0]
+  EXPECT_EQ(msg[7], 0x80);  // apdu[1]
+  EXPECT_EQ(msg[8], 0x0C);  // apdu[2]
+  EXPECT_EQ(msg[9], 0x6F);  // apdu[3]
+}
+
+TEST(EibdWireFormatTest, GroupPacketEmptyApdu) {
+  auto msg = build_group_packet(0x0000, {});
+  EXPECT_EQ(msg.size(), 6);  // 2 (len) + 4 (payload)
+  EXPECT_EQ(msg[0], 0x00);   // len hi
+  EXPECT_EQ(msg[1], 0x04);   // len lo = 4
+  EXPECT_EQ(msg[2], hi(EibMessageType::GROUP_PACKET));
+  EXPECT_EQ(msg[3], lo(EibMessageType::GROUP_PACKET));
+}
+
+// -- EIB_CACHE_READ --
+
+TEST(EibdWireFormatTest, CacheRead) {
+  // Payload: [type:2][addr:2] = 4 bytes
+  auto msg = build_cache_read(0x0A03);  // 1/2/3
+  EXPECT_EQ(msg.size(), 6);             // 2 (len) + 4 (payload)
+  EXPECT_EQ(msg[0], 0x00);              // len hi
+  EXPECT_EQ(msg[1], 0x04);              // len lo = 4
+  EXPECT_EQ(msg[2], hi(EibMessageType::CACHE_READ));
+  EXPECT_EQ(msg[3], lo(EibMessageType::CACHE_READ));
+  EXPECT_EQ(msg[4], 0x0A);  // addr hi
+  EXPECT_EQ(msg[5], 0x03);  // addr lo
+}
+
+TEST(EibdWireFormatTest, CacheReadMaxAddress) {
+  // 31/7/255 = 0x1FFF
+  auto msg = build_cache_read(0x1FFF);
+  EXPECT_EQ(msg.size(), 6);
+  EXPECT_EQ(msg[0], 0x00);
+  EXPECT_EQ(msg[1], 0x04);
+  EXPECT_EQ(msg[2], hi(EibMessageType::CACHE_READ));
+  EXPECT_EQ(msg[3], lo(EibMessageType::CACHE_READ));
+  EXPECT_EQ(msg[4], 0x1F);  // addr hi
+  EXPECT_EQ(msg[5], 0xFF);  // addr lo
+}
+
+// -- EIB_CACHE_READ_NOWAIT --
+
+TEST(EibdWireFormatTest, CacheReadNowait) {
+  // Payload: [type:2][addr:2] — same structure as CACHE_READ, different type
+  auto msg = build_cache_read_nowait(0x0A03);
+  EXPECT_EQ(msg.size(), 6);
+  EXPECT_EQ(msg[0], 0x00);  // len hi
+  EXPECT_EQ(msg[1], 0x04);  // len lo = 4
+  EXPECT_EQ(msg[2], hi(EibMessageType::CACHE_READ_NOWAIT));
+  EXPECT_EQ(msg[3], lo(EibMessageType::CACHE_READ_NOWAIT));
+  EXPECT_EQ(msg[4], 0x0A);  // addr hi
+  EXPECT_EQ(msg[5], 0x03);  // addr lo
+}
+
+// -- Generic build_eibd_message (used internally by the builders above) --
+
+TEST(EibdWireFormatTest, GenericBuilderLengthBoundary) {
+  // Verify the generic builder handles edge cases correctly
+  // 255-byte payload → total payload = 257 (0x0101)
+  std::vector<uint8_t> data(255, 0x42);
+  auto msg = build_eibd_message(EibMessageType::GROUP_PACKET, data);
+  EXPECT_EQ(msg[0], 0x01);         // len hi = 1
+  EXPECT_EQ(msg[1], 0x01);         // len lo = 1 (257 = 0x0101)
+  EXPECT_EQ(msg.size(), 2 + 257);  // 2 (len header) + 257 (payload)
+}
+
+// ---- parse_eibd_message (inbound message parsing) ----
+
+TEST(EibdMessageParseTest, ParseGroupPacket) {
+  // Build a raw GROUP_PACKET message for parsing
+  uint8_t t_hi = hi(EibMessageType::GROUP_PACKET);
+  uint8_t t_lo = lo(EibMessageType::GROUP_PACKET);
+  std::vector<uint8_t> raw = {0x00, 0x04, t_hi, t_lo, 0xAA, 0xBB};
   uint16_t type;
   std::vector<uint8_t> data;
   ASSERT_TRUE(parse_eibd_message(raw, type, data));
-  EXPECT_EQ(type, 0x0027);
+  EXPECT_EQ(type, EibMessageType::GROUP_PACKET);
   ASSERT_EQ(data.size(), 2);
   EXPECT_EQ(data[0], 0xAA);
   EXPECT_EQ(data[1], 0xBB);
+}
+
+TEST(EibdMessageParseTest, ParseOpenGroupconResponse) {
+  // knxd responds to EIB_OPEN_GROUPCON with just the 2 type bytes (no data)
+  uint8_t t_hi = hi(EibMessageType::OPEN_GROUPCON);
+  uint8_t t_lo = lo(EibMessageType::OPEN_GROUPCON);
+  std::vector<uint8_t> raw = {0x00, 0x02, t_hi, t_lo};
+  uint16_t type;
+  std::vector<uint8_t> data;
+  ASSERT_TRUE(parse_eibd_message(raw, type, data));
+  EXPECT_EQ(type, EibMessageType::OPEN_GROUPCON);
+  EXPECT_TRUE(data.empty());
 }
 
 TEST(EibdMessageTest, ParseTooShort) {
@@ -241,7 +396,7 @@ TEST(TryExtractMessageTest, EmptyBuffer) {
 TEST(TryExtractMessageTest, MultipleMessagesBuffered) {
   // Two messages back-to-back
   std::vector<uint8_t> buffer = {
-      0x00, 0x02, 0x00, 0x27,  // 2-byte payload, type 0x0027
+      0x00, 0x02, 0x00, 0x27,       // 2-byte payload, type 0x0027
       0x00, 0x03, 0x00, 0x25, 0xAA  // 3-byte payload, type 0x0025
   };
   auto msg1 = try_extract_message(buffer);
@@ -259,7 +414,7 @@ TEST(TryExtractMessageTest, PartialSecondMessage) {
   // First message complete, second incomplete
   std::vector<uint8_t> buffer = {
       0x00, 0x02, 0x00, 0x27,  // complete: 2+2=4 bytes
-      0x00, 0x05, 0x00          // length says 5, only 1 byte available → incomplete
+      0x00, 0x05, 0x00         // length says 5, only 1 byte available → incomplete
   };
   auto msg1 = try_extract_message(buffer);
   ASSERT_TRUE(msg1.has_value());

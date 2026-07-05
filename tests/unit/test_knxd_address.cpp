@@ -50,19 +50,19 @@ TEST(ApduEdgeCases, MaxSingleByteValue) {
 }
 
 TEST(EibdMessageEdgeCases, ZeroLengthPayload) {
-  // Message with just type, no extra data
-  auto msg = build_eibd_message(0x0026, {});
+  // Generic builder edge case: message with type but no extra data (payload = type only)
+  auto msg = build_eibd_message(EibMessageType::GROUP_PACKET, {});
   // payload = 2 bytes (type only)
   EXPECT_EQ(msg[0], 0x00);
   EXPECT_EQ(msg[1], 0x02);
-  EXPECT_EQ(msg[2], 0x00);
-  EXPECT_EQ(msg[3], 0x26);
+  EXPECT_EQ(msg[2], static_cast<uint8_t>((EibMessageType::GROUP_PACKET >> 8) & 0xFF));
+  EXPECT_EQ(msg[3], static_cast<uint8_t>(EibMessageType::GROUP_PACKET & 0xFF));
   EXPECT_EQ(msg.size(), 4);
 }
 
 TEST(EibdMessageEdgeCases, MaxData) {
   std::vector<uint8_t> data(255, 0x42);
-  auto msg = build_eibd_message(0x0027, data);
+  auto msg = build_eibd_message(EibMessageType::GROUP_PACKET, data);
   EXPECT_EQ(msg[0], static_cast<uint8_t>(((2 + 255) >> 8) & 0xFF));
   EXPECT_EQ(msg[1], static_cast<uint8_t>((2 + 255) & 0xFF));
 }

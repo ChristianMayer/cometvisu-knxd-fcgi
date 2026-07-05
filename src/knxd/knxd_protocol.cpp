@@ -200,10 +200,40 @@ std::optional<std::vector<uint8_t>> try_extract_message(std::vector<uint8_t>& bu
     return std::nullopt;  // incomplete message — need more data
 
   // Extract complete message
-  std::vector<uint8_t> msg(buffer.begin(),
-                           buffer.begin() + static_cast<ptrdiff_t>(total_needed));
+  std::vector<uint8_t> msg(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(total_needed));
   buffer.erase(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(total_needed));
   return msg;
+}
+
+// ---- Type-specific message builders ----
+
+std::vector<uint8_t> build_open_groupcon(bool write_only) {
+  // knxd >= 0.14 expects a 5-byte payload for all EIB_OPEN_* types:
+  // [type:2][reserved/addr:2][write_only:1]
+  uint8_t wo_byte = write_only ? 0xFF : 0x00;
+  return build_eibd_message(EIB_OPEN_GROUPCON, {0x00, 0x00, wo_byte});
+}
+
+std::vector<uint8_t> build_group_packet(uint16_t group_addr, const std::vector<uint8_t>& apdu) {
+  // Payload: [type:2][dest_addr:2][apdu:N]
+  std::vector<uint8_t> data;
+  data.reserve(2 + apdu.size());
+  data.push_back(static_cast<uint8_t>((group_addr >> 8) & 0xFF));
+  data.push_back(static_cast<uint8_t>(group_addr & 0xFF));
+  data.insert(data.end(), apdu.begin(), apdu.end());
+  return build_eibd_message(EIB_GROUP_PACKET, data);
+}
+
+std::vector<uint8_t> build_cache_read(uint16_t group_addr) {
+  // Payload: [type:2][addr:2]
+  return build_eibd_message(EIB_CACHE_READ, {static_cast<uint8_t>((group_addr >> 8) & 0xFF),
+                                             static_cast<uint8_t>(group_addr & 0xFF)});
+}
+
+std::vector<uint8_t> build_cache_read_nowait(uint16_t group_addr) {
+  // Payload: [type:2][addr:2]
+  return build_eibd_message(EIB_CACHE_READ_NOWAIT, {static_cast<uint8_t>((group_addr >> 8) & 0xFF),
+                                                    static_cast<uint8_t>(group_addr & 0xFF)});
 }
 
 }  // namespace cvknxd

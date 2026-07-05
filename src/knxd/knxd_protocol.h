@@ -104,6 +104,32 @@ inline constexpr uint16_t CACHE_READ_NOWAIT = EIB_CACHE_READ_NOWAIT;
 [[nodiscard]] std::vector<uint8_t> build_eibd_message(uint16_t type,
                                                       const std::vector<uint8_t>& data);
 
+/// Build an EIB_OPEN_GROUPCON wire message.
+/// knxd >= 0.14 expects a 5-byte payload: [type:2][reserved:2][write_only:1].
+/// @param write_only If true, no group telegrams will be delivered.
+/// @return Complete wire-format message ready to send.
+[[nodiscard]] std::vector<uint8_t> build_open_groupcon(bool write_only);
+
+/// Build an EIB_GROUP_PACKET wire message.
+/// Payload: [type:2][dest_addr:2][apdu:N].
+/// @param group_addr 16-bit EIB group destination address.
+/// @param apdu Encoded APDU bytes (including 2-byte header).
+/// @return Complete wire-format message ready to send.
+[[nodiscard]] std::vector<uint8_t> build_group_packet(uint16_t group_addr,
+                                                      const std::vector<uint8_t>& apdu);
+
+/// Build an EIB_CACHE_READ wire message.
+/// Payload: [type:2][addr:2].
+/// @param group_addr 16-bit EIB group address to read from cache.
+/// @return Complete wire-format message ready to send.
+[[nodiscard]] std::vector<uint8_t> build_cache_read(uint16_t group_addr);
+
+/// Build an EIB_CACHE_READ_NOWAIT wire message.
+/// Payload: [type:2][addr:2].
+/// @param group_addr 16-bit EIB group address to read from cache (non-blocking).
+/// @return Complete wire-format message ready to send.
+[[nodiscard]] std::vector<uint8_t> build_cache_read_nowait(uint16_t group_addr);
+
 /// Parse a received eibd wire message.
 /// @param raw Raw bytes received from socket.
 /// @param out_type Output: extracted message type.
@@ -122,7 +148,6 @@ inline constexpr size_t kMaxReadBufferSize = 1 * 1024 * 1024;
 /// @param buffer The accumulated read buffer (modified in place).
 /// @return Complete message bytes (including 2-byte length header), or std::nullopt
 ///         if no complete message is available yet.
-[[nodiscard]] std::optional<std::vector<uint8_t>> try_extract_message(
-    std::vector<uint8_t>& buffer);
+[[nodiscard]] std::optional<std::vector<uint8_t>> try_extract_message(std::vector<uint8_t>& buffer);
 
 }  // namespace cvknxd
