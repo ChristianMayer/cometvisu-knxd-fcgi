@@ -27,10 +27,10 @@ TEST(JsonBuilderTest, Empty) {
 TEST(JsonBuilderTest, SimpleObject) {
   JsonBuilder jb;
   jb.start_object();
-  jb.add_string("v", "1.0");
+  jb.add_string("v", "0.0.2");
   jb.add_string("s", "abc");
   jb.end_object();
-  EXPECT_EQ(jb.str(), R"({"v":"1.0","s":"abc"})");
+  EXPECT_EQ(jb.str(), R"({"v":"0.0.2","s":"abc"})");
 }
 
 TEST(JsonBuilderTest, NestedObject) {
@@ -71,11 +71,11 @@ TEST(JsonBuilderTest, ClearAndReuse) {
 TEST(JsonBuilderTest, Take) {
   JsonBuilder jb;
   jb.start_object();
-  jb.add_string("v", "1.0");
+  jb.add_string("v", "0.0.2");
   jb.end_object();
 
   std::string result = jb.take();
-  EXPECT_EQ(result, R"({"v":"1.0"})");
+  EXPECT_EQ(result, R"({"v":"0.0.2"})");
   EXPECT_TRUE(jb.str().empty());
 }
 
