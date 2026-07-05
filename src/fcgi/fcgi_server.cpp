@@ -36,6 +36,22 @@ void FcgiServer::set_handler(RequestHandler handler) {
   handler_ = std::move(handler);
 }
 
+bool FcgiServer::listen(const std::string& socket_path) {
+  if (socket_path.empty()) {
+    return false;
+  }
+  int fd = FCGX_OpenSocket(socket_path.c_str(), 5);
+  if (fd < 0) {
+    return false;
+  }
+  listen_fd_ = fd;
+  return true;
+}
+
+bool FcgiServer::is_listening() const {
+  return listen_fd_ >= 0;
+}
+
 int FcgiServer::run() {
   if (!handler_) {
     std::cerr << "[ERROR] No request handler set\n";

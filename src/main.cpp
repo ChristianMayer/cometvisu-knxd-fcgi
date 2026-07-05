@@ -127,6 +127,21 @@ int main(int argc, char* argv[]) {
   FcgiServer server;
   server.set_handler([&](const FcgiRequest& req) -> FcgiResponse { return router.route(req); });
 
+  // ---- Optional direct socket (standalone mode) ----
+  // Set FCGI_SOCKET to a TCP port (":9000") or Unix socket path to run without
+  // spawn-fcgi. When unset, the server uses the standard FCGI stdin/stdout
+  // stream set up by spawn-fcgi or the web server.
+  const char* fcgi_socket = get_env_default("FCGI_SOCKET", "");
+  if (fcgi_socket[0] != '\0') {
+    if (server.listen(fcgi_socket)) {
+      std::cout << "[INFO] Direct FCGI socket: " << fcgi_socket << "\n";
+    } else {
+      std::cerr << "[ERROR] Failed to open FCGI socket: " << fcgi_socket << "\n";
+      knxd.disconnect();
+      return 1;
+    }
+  }
+
   std::cout << "[INFO] cometvisu-knxd-fcgi starting, knxd socket: " << knxd_socket << "\n";
 
   // ---- Run ----

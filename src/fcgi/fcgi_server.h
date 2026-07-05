@@ -28,6 +28,12 @@ using RequestHandler = std::function<FcgiResponse(const FcgiRequest&)>;
 
 /// Main FastCGI server: accepts requests from the web server and dispatches them.
 /// Uses the libfcgi library for the FCGI protocol implementation.
+///
+/// Supports two modes:
+///   1. Spawn-fcgi mode (default): reads/writes FCGI on stdin/stdout as set up
+///      by spawn-fcgi or a web server.
+///   2. Direct socket mode: call listen() to open a TCP or Unix socket for
+///      direct FCGI connections, then run() accepts from both stdin and the socket.
 class FcgiServer {
 public:
   FcgiServer();
@@ -35,12 +41,25 @@ public:
   /// Set the callback for handling requests.
   void set_handler(RequestHandler handler);
 
+  /// Open a TCP or Unix socket for direct FCGI connections.
+  /// Once opened, the socket is automatically used by run() alongside the
+  /// standard FCGI stdin/stdout stream.
+  ///
+  /// @param socket_path Either ":port" for TCP (e.g., ":9000") or a
+  ///                    filesystem path for a Unix domain socket.
+  /// @return true if the socket was opened successfully.
+  [[nodiscard]] bool listen(const std::string& socket_path);
+
+  /// Check if a listening socket has been opened.
+  [[nodiscard]] bool is_listening() const;
+
   /// Run the FCGI accept loop. Blocks until the server shuts down.
   /// @return 0 on success, non-zero on error.
   int run();
 
 private:
   RequestHandler handler_;
+  int listen_fd_ = -1;
 
   /// Read all FCGI parameters from stdin into an FcgiRequest.
   [[nodiscard]] static FcgiRequest read_request();

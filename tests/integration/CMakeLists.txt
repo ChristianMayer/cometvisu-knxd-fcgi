@@ -30,3 +30,9 @@ add_executable(test_write_handler
 )
 target_link_libraries(test_write_handler PRIVATE cvknxd_handlers cvknxd_knxd cvknxd_state cvknxd_mocks GTest::gtest GTest::gtest_main)
 add_test(NAME test_write_handler COMMAND test_write_handler)
+
+add_executable(test_fcgi_server_socket
+    test_fcgi_server_socket.cpp
+)
+target_link_libraries(test_fcgi_server_socket PRIVATE cvknxd_fcgi cvknxd_util GTest::gtest GTest::gtest_main)
+add_test(NAME test_fcgi_server_socket COMMAND test_fcgi_server_socket)

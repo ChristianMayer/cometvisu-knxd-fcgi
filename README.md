@@ -32,8 +32,14 @@ The build expects to find `eibtypes.h` in `<KNXD_SOURCE_DIR>/include/`.
 # Run tests
 ctest --test-dir build --output-on-failure
 
-# Run (via spawn-fcgi or your web server's FastCGI support)
+# Run via spawn-fcgi (traditional FastCGI mode)
 spawn-fcgi -p 9000 -n ./build/src/cometvisu-knxd-fcgi
+
+# Run standalone (direct socket — no spawn-fcgi needed)
+FCGI_SOCKET=:9000 ./build/src/cometvisu-knxd-fcgi
+
+# Run standalone on a Unix socket
+FCGI_SOCKET=/tmp/cometvisu-fcgi.sock ./build/src/cometvisu-knxd-fcgi
 ```
 
 ### Environment variables
@@ -41,6 +47,7 @@ spawn-fcgi -p 9000 -n ./build/src/cometvisu-knxd-fcgi
 | Variable              | Default    | Description                              |
 |-----------------------|------------|------------------------------------------|
 | `KNXD_SOCKET`         | `/run/knx` | Path to the knxd Unix socket             |
+| `FCGI_SOCKET`         | *(unset)*  | Direct FCGI socket (`:port` for TCP, or filesystem path for Unix socket). When set, the server runs standalone without `spawn-fcgi`. |
 | `LONGPOLL_TIMEOUT_SEC`| `300`      | Max seconds to wait in long-poll `/r`    |
 | `DEBUG_BACKEND`       | *(unset)*  | Set to `1` to enable debug logging to stderr |
 
