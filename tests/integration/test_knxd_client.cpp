@@ -264,8 +264,10 @@ TEST(MockKnxdClientTest, CacheReadFailCount) {
   // Set fail count: first call returns nullopt, second succeeds
   client.set_cache_read_fail_count(1);
 
-  // First call fails
+  // First call fails (also simulates connection drop)
   EXPECT_FALSE(client.cache_read(0x0A03, false).has_value());
+  // Reconnect after simulated failure (as handlers do)
+  ASSERT_TRUE(client.reconnect());
   // Second call succeeds
   auto val = client.cache_read(0x0A03, false);
   ASSERT_TRUE(val.has_value());
@@ -283,8 +285,10 @@ TEST(MockKnxdClientTest, CacheLastUpdatesFailCount) {
   // Set fail count: first call returns nullopt, second succeeds
   client.set_cache_last_updates_fail_count(1);
 
-  // First call fails
+  // First call fails (also simulates connection drop)
   EXPECT_FALSE(client.cache_last_updates_2(0, 5).has_value());
+  // Reconnect after simulated failure (as handlers do)
+  ASSERT_TRUE(client.reconnect());
   // Second call succeeds
   auto result = client.cache_last_updates_2(0, 5);
   ASSERT_TRUE(result.has_value());
