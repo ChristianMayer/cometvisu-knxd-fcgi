@@ -26,6 +26,8 @@ std::string SessionStore::create_session(bool anonymous) {
   if (anonymous)
     return "0";
 
+  std::lock_guard<std::mutex> lock(mutex_);
+
   // Clean up expired sessions before creating a new one
   cleanup_expired();
 
@@ -48,14 +50,17 @@ std::string SessionStore::create_session(bool anonymous) {
 bool SessionStore::is_valid(std::string_view session_id) {
   if (session_id == "0")
     return true;  // anonymous always valid
+
+  std::lock_guard<std::mutex> lock(mutex_);
+
   std::string key{session_id};
   auto it = sessions_.find(key);
   if (it == sessions_.end())
     return false;
 
   // Check expiration
-  auto age = std::chrono::duration_cast<std::chrono::seconds>(
-                 std::chrono::steady_clock::now() - it->second.created)
+  auto age = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() -
+                                                              it->second.created)
                  .count();
   if (age >= session_ttl_sec_) {
     // Expired — remove from store and return false
@@ -68,6 +73,7 @@ bool SessionStore::is_valid(std::string_view session_id) {
 void SessionStore::remove(std::string_view session_id) {
   if (session_id == "0")
     return;
+  std::lock_guard<std::mutex> lock(mutex_);
   std::string key{session_id};
   sessions_.erase(key);
 }

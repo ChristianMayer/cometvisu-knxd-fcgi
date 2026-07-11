@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <utility>
@@ -50,6 +51,13 @@ struct KnxdClient::Impl {
   // poll_group_telegram() drains this queue first without incrementing the counter.
   std::queue<std::pair<uint16_t, std::vector<uint8_t>>> pre_counted_telegrams_;
 
+  // Mutex serializes all access to the knxd socket connections.
+  // The main fd and cache_fd_ are independent connections to knxd,
+  // but each must be serialized to avoid interleaving binary protocol messages.
+  // recursive_mutex is used because public methods call each other internally
+  // (e.g. connect() calls disconnect(), open_group_socket() calls is_connected()).
+  mutable std::recursive_mutex mutex;
+
   ~Impl() {
     if (fd >= 0) {
       ::close(fd);
@@ -68,6 +76,8 @@ KnxdClient::KnxdClient(KnxdClient&&) noexcept = default;
 KnxdClient& KnxdClient::operator=(KnxdClient&&) noexcept = default;
 
 bool KnxdClient::connect(std::string_view socket_path) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+
   if (impl_->fd >= 0) {
     disconnect();
   }
@@ -131,6 +141,8 @@ bool KnxdClient::connect(std::string_view socket_path) {
 }
 
 void KnxdClient::disconnect() {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+
   if (impl_->fd >= 0) {
     ::close(impl_->fd);
     impl_->fd = -1;
@@ -149,10 +161,13 @@ void KnxdClient::disconnect() {
 }
 
 bool KnxdClient::is_connected() const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   return impl_->fd >= 0;
 }
 
 bool KnxdClient::reconnect() {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+
   if (impl_->socket_path_.empty())
     return false;  // never connected, nothing to reconnect to
 
@@ -269,6 +284,8 @@ std::optional<std::vector<uint8_t>> read_message(int fd, std::vector<uint8_t>& b
 }  // namespace
 
 bool KnxdClient::open_group_socket(bool write_only) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+
   if (!is_connected())
     return false;
 
@@ -298,6 +315,8 @@ bool KnxdClient::open_group_socket(bool write_only) {
 }
 
 bool KnxdClient::send_group_packet(uint16_t group_addr, const std::vector<uint8_t>& apdu) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+
   // First attempt: try with current connection
   if (!is_connected() || !impl_->group_socket_open) {
     // Attempt transparent reconnect once
@@ -394,6 +413,8 @@ int* KnxdClient::ensure_cache_connection() {
 }
 
 std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, bool nowait) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+
   // Helper: perform one cache_read attempt. Returns nullopt on failure,
   // where the failure may be due to a connection error (retryable) or
   // a timeout/protocol error (not retryable). We distinguish by whether
@@ -532,14 +553,17 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
 }
 
 int KnxdClient::get_fd() const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   return impl_->fd;
 }
 
 uint64_t KnxdClient::get_telegram_count() const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   return impl_->telegram_count_;
 }
 
 void KnxdClient::set_nonblocking(bool enable) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   if (impl_->fd < 0)
     return;
   int flags = ::fcntl(impl_->fd, F_GETFL, 0);
@@ -553,6 +577,8 @@ void KnxdClient::set_nonblocking(bool enable) {
 }
 
 bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8_t>& out_apdu) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+
   if (!is_connected()) {
     // Attempt transparent reconnect once
     if (!reconnect())
@@ -631,6 +657,8 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
 }
 
 std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start, int timeout_sec) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+
   // Retry helper: if knxd restarts during the long-poll, reconnect and retry
   // with the remaining time. We track the deadline outside the retry loop.
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec + 5);

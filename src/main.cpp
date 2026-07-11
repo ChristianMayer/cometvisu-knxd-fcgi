@@ -78,6 +78,9 @@ int main(int argc, char* argv[]) {
                 << "\n"
                 << "Environment variables:\n"
                 << "  KNXD_SOCKET           Path to the knxd Unix socket (default: /run/knx)\n"
+                << "  FCGI_SOCKET           Direct FCGI socket (unset = spawn-fcgi mode)\n"
+                << "  FCGI_THREADS          Worker threads in direct socket mode (default: 20, "
+                   "max: 256)\n"
                 << "  LONGPOLL_TIMEOUT_SEC  Max seconds to wait in long-poll /r (default: 300)\n"
                 << "  DEBUG_BACKEND         Set to 1 to enable debug logging to stderr\n"
                 << "\n"
@@ -101,6 +104,7 @@ int main(int argc, char* argv[]) {
   //     sufficient access to compromise the system directly.
   const char* knxd_socket = get_env_default("KNXD_SOCKET", "/run/knx");
   int longpoll_timeout = parse_env_int("LONGPOLL_TIMEOUT_SEC", 300, 1, kMaxLongpollTimeoutSec);
+  int fcgi_threads = parse_env_int("FCGI_THREADS", 20, 1, 256);
 
   // ---- Initialize components ----
   KnxdClient knxd;
@@ -145,7 +149,17 @@ int main(int argc, char* argv[]) {
   std::cout << "[INFO] cometvisu-knxd-fcgi starting, knxd socket: " << knxd_socket << "\n";
 
   // ---- Run ----
-  int result = server.run();
+  int result;
+  if (fcgi_socket[0] != '\0') {
+    // Direct socket mode: use multi-threaded accept loop to handle
+    // concurrent clients (including long-poll /r requests).
+    std::cout << "[INFO] Using " << fcgi_threads << " worker threads\n";
+    result = server.run_multithreaded(fcgi_threads);
+  } else {
+    // Spawn-fcgi mode: concurrency is handled by running multiple
+    // process instances via spawn-fcgi (e.g., spawn-fcgi -F N).
+    result = server.run();
+  }
 
   // Cleanup
   knxd.disconnect();

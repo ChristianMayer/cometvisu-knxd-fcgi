@@ -95,13 +95,19 @@ actual file content (e.g., `#pragma once` or `#include`).
 
 ## Key Design Decisions
 
-1. **Single-process, single-threaded, event-driven**: The FCGI accept loop
-   processes one request at a time. Long-poll reads use non-blocking I/O on the
-   knxd socket with `poll()` or `epoll()`.
+1. **Multi-threaded FCGI server**: The FCGI accept loop uses multiple worker
+   threads, each running its own `FCGX_Accept_r()` on the shared listen socket.
+   The OS serializes accept calls across threads. This is critical because
+   long-poll `/r` requests block for up to 300 seconds — without threading,
+   one long-poll would block all other clients. Thread count is configurable
+   (default: 4). All shared state (KnxdClient, SessionStore) is protected by
+   `std::mutex`.
 
 2. **Knxd connection is persistent**: A single Unix socket connection to knxd
    is opened at startup and reused for all requests. The client opens a "Group
    Socket" (not a T_Group tunnel per address) for listening to group telegrams.
+   Access to the knxd socket is serialized via mutex since multiple worker
+   threads share the same connection.
 
 3. **Address cache**: Maintains a `std::unordered_map<group_addr, CacheEntry>`
    where `CacheEntry` has `value`, `last_updated` timestamp.

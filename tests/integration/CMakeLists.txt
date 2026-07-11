@@ -36,3 +36,9 @@ add_executable(test_fcgi_server_socket
 )
 target_link_libraries(test_fcgi_server_socket PRIVATE cvknxd_fcgi cvknxd_util GTest::gtest GTest::gtest_main)
 add_test(NAME test_fcgi_server_socket COMMAND test_fcgi_server_socket)
+
+add_executable(test_concurrent_clients
+    test_concurrent_clients.cpp
+)
+target_link_libraries(test_concurrent_clients PRIVATE cvknxd_fcgi cvknxd_util GTest::gtest GTest::gtest_main ${FCGI_LIBRARY} pthread)
+add_test(NAME test_concurrent_clients COMMAND test_concurrent_clients)

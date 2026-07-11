@@ -16,6 +16,7 @@
 #pragma once
 
 #include <chrono>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -26,7 +27,7 @@ namespace cvknxd {
 /// Stores active CometVisu sessions with their metadata.
 /// Sessions expire after a configurable TTL (default: 30 minutes).
 /// Enforces a maximum number of concurrent sessions (default: 10000).
-/// Thread-safe: no (single-threaded process).
+/// Thread-safe: yes (all public methods are guarded by std::mutex).
 class SessionStore {
 public:
   /// Default session TTL in seconds.
@@ -63,6 +64,7 @@ private:
   };
 
   std::unordered_map<std::string, Session> sessions_;
+  mutable std::mutex mutex_;
   int session_ttl_sec_;
   size_t max_sessions_;
 

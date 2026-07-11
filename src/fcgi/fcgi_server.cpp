@@ -16,6 +16,9 @@
 #include "fcgi_server.h"
 
 #include <fcgi_stdio.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 #include <charconv>
 #include <cstdlib>
@@ -36,15 +39,27 @@ inline constexpr int kMaxContentLength = 64 * 1024;
 
 FcgiServer::FcgiServer() = default;
 
+FcgiServer::~FcgiServer() {
+  shutdown();
+  for (auto& t : workers_) {
+    if (t.joinable()) {
+      t.join();
+    }
+  }
+}
+
 void FcgiServer::set_handler(RequestHandler handler) {
   handler_ = std::move(handler);
 }
 
-bool FcgiServer::listen(const std::string& socket_path) {
+bool FcgiServer::listen(const std::string& socket_path, int backlog) {
   if (socket_path.empty()) {
     return false;
   }
-  int fd = FCGX_OpenSocket(socket_path.c_str(), 5);
+  if (backlog < 1) {
+    backlog = 128;
+  }
+  int fd = FCGX_OpenSocket(socket_path.c_str(), backlog);
   if (fd < 0) {
     return false;
   }
@@ -112,6 +127,127 @@ int FcgiServer::run() {
   }
 
   return 0;
+}
+
+void FcgiServer::shutdown() {
+  shutdown_requested_.store(true, std::memory_order_relaxed);
+
+  if (listen_fd_ >= 0) {
+    // Step 1: shutdown(SHUT_RDWR) causes any thread blocked in accept()
+    // on this fd to fail with EINVAL. This is reliable on Linux, unlike
+    // close() which may leave accept() blocked indefinitely.
+    ::shutdown(listen_fd_, SHUT_RDWR);
+
+    // Step 2: Connect to unblock any workers that didn't respond to
+    // shutdown(). Each accepted connection gets an immediate client EOF,
+    // causing FCGX_Accept_r to return -1 and the worker to exit.
+    struct sockaddr_un addr;
+    socklen_t addr_len = sizeof(addr);
+    if (::getsockname(listen_fd_, reinterpret_cast<struct sockaddr*>(&addr), &addr_len) == 0) {
+      int wakeups = (num_workers_ > 0) ? num_workers_ : 64;
+      for (int i = 0; i < wakeups; ++i) {
+        int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        if (fd < 0)
+          break;
+        int ret = ::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), addr_len);
+        if (ret == 0 || errno == EINPROGRESS) {
+          // Connection queued — one worker will accept it
+        } else {
+          ::close(fd);
+          break;
+        }
+        ::close(fd);
+      }
+    }
+
+    // Step 3: Close the fd. By now all workers should have exited.
+    ::close(listen_fd_);
+    listen_fd_ = -1;
+  }
+}
+
+int FcgiServer::run_multithreaded(int num_threads) {
+  if (!handler_) {
+    std::cerr << "[ERROR] No request handler set\n";
+    return 1;
+  }
+
+  if (listen_fd_ < 0) {
+    std::cerr << "[ERROR] run_multithreaded() requires a listening socket (call listen() first)\n";
+    return 1;
+  }
+
+  if (num_threads < 1) {
+    num_threads = 1;
+  }
+
+  // FCGX_Init() must be called once before any FCGX_Accept_r().
+  // It sets the libInitialized flag and performs platform-specific setup.
+  if (FCGX_Init() != 0) {
+    std::cerr << "[ERROR] FCGX_Init failed\n";
+    return 1;
+  }
+
+  shutdown_requested_.store(false, std::memory_order_relaxed);
+  num_workers_ = num_threads;
+
+  // Spawn worker threads. Each thread creates its own FCGX_Request and
+  // calls FCGX_Accept_r() on the shared listen socket. The OS serializes
+  // accept() calls across threads — when one thread accepts a connection,
+  // the next thread waiting on accept() gets the next connection.
+  for (int i = 0; i < num_threads; ++i) {
+    workers_.emplace_back([this]() {
+      FCGX_Request request;
+      if (FCGX_InitRequest(&request, listen_fd_, 0) != 0) {
+        std::cerr << "[ERROR] FCGX_InitRequest failed in worker thread\n";
+        return;
+      }
+
+      while (!shutdown_requested_.load(std::memory_order_relaxed)) {
+        int rc = FCGX_Accept_r(&request);
+        if (rc < 0) {
+          // Accept failed — either shutdown (listen_fd_ closed) or error.
+          break;
+        }
+
+        // Make environment variables accessible via getenv() for read_request()
+        environ = request.envp;
+
+        FcgiRequest req = read_request();
+        DebugLog::http_request(req.request_method, req.request_uri);
+
+        FcgiResponse resp = handler_(req);
+        DebugLog::http_response(resp.status_code, resp.body);
+
+        write_response_direct(request, resp);
+
+        FCGX_Finish_r(&request);
+      }
+    });
+  }
+
+  // Wait for all worker threads to complete (triggered by shutdown()).
+  for (auto& t : workers_) {
+    t.join();
+  }
+  workers_.clear();
+
+  return 0;
+}
+
+void FcgiServer::write_response_direct(FCGX_Request& request, const FcgiResponse& response) {
+  // Build the full HTTP response as a single string.
+  std::string output;
+  output.reserve(256 + response.body.size());
+
+  output += "Status: " + std::to_string(response.status_code) + "\r\n";
+  output += "Content-Type: " + response.content_type + "; charset=utf-8\r\n";
+  output += "Content-Length: " + std::to_string(response.body.size()) + "\r\n";
+  output += "\r\n";
+  output += response.body;
+
+  // Write to the FCGX request output stream (direct socket mode).
+  FCGX_PutStr(output.data(), static_cast<int>(output.size()), request.out);
 }
 
 FcgiRequest FcgiServer::read_request() {
