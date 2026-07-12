@@ -42,3 +42,9 @@ add_executable(test_concurrent_clients
 )
 target_link_libraries(test_concurrent_clients PRIVATE cvknxd_fcgi cvknxd_util GTest::gtest GTest::gtest_main ${FCGI_LIBRARY} pthread)
 add_test(NAME test_concurrent_clients COMMAND test_concurrent_clients)
+
+add_executable(test_knxd_client_concurrency
+    test_knxd_client_concurrency.cpp
+)
+target_link_libraries(test_knxd_client_concurrency PRIVATE cvknxd_knxd GTest::gtest GTest::gtest_main pthread)
+add_test(NAME test_knxd_client_concurrency COMMAND test_knxd_client_concurrency)

@@ -51,12 +51,23 @@ struct KnxdClient::Impl {
   // poll_group_telegram() drains this queue first without incrementing the counter.
   std::queue<std::pair<uint16_t, std::vector<uint8_t>>> pre_counted_telegrams_;
 
-  // Mutex serializes all access to the knxd socket connections.
-  // The main fd and cache_fd_ are independent connections to knxd,
-  // but each must be serialized to avoid interleaving binary protocol messages.
+  // Mutex serializes access to the main knxd socket connection (fd_).
   // recursive_mutex is used because public methods call each other internally
   // (e.g. connect() calls disconnect(), open_group_socket() calls is_connected()).
   mutable std::recursive_mutex mutex;
+
+  // Separate mutex for the cache connection (cache_fd_, cache_read_buffer_).
+  // This allows cache operations (cache_read, cache_last_updates_2) to proceed
+  // concurrently with main connection operations (send_group_packet).
+  // recursive_mutex is used because cache_read calls ensure_cache_connection
+  // and invalidate_cache, which also need this mutex.
+  // Must be acquired AFTER mutex when both are needed (disconnect, reconnect).
+  mutable std::recursive_mutex cache_mutex;
+
+  // Protects pre_counted_telegrams_ which is written by cache_read (under
+  // cache_mutex) and read by poll_group_telegram (under mutex).
+  // recursive_mutex because disconnect() and reconnect() may nest calls.
+  mutable std::recursive_mutex telegram_queue_mutex;
 
   ~Impl() {
     if (fd >= 0) {
@@ -141,7 +152,10 @@ bool KnxdClient::connect(std::string_view socket_path) {
 }
 
 void KnxdClient::disconnect() {
-  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  // Acquire both mutexes: main first, then cache (consistent ordering to prevent deadlock).
+  std::lock_guard<std::recursive_mutex> main_lock(impl_->mutex);
+  std::lock_guard<std::recursive_mutex> cache_lock(impl_->cache_mutex);
+  std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
 
   if (impl_->fd >= 0) {
     ::close(impl_->fd);
@@ -166,7 +180,10 @@ bool KnxdClient::is_connected() const {
 }
 
 bool KnxdClient::reconnect() {
-  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  // Acquire both mutexes: main first, then cache.
+  std::lock_guard<std::recursive_mutex> main_lock(impl_->mutex);
+  std::lock_guard<std::recursive_mutex> cache_lock(impl_->cache_mutex);
+  std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
 
   if (impl_->socket_path_.empty())
     return false;  // never connected, nothing to reconnect to
@@ -345,6 +362,9 @@ bool KnxdClient::send_group_packet(uint16_t group_addr, const std::vector<uint8_
 }
 
 void KnxdClient::invalidate_cache() {
+  std::lock_guard<std::recursive_mutex> cache_lock(impl_->cache_mutex);
+  std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
+
   if (impl_->cache_fd_ >= 0) {
     ::close(impl_->cache_fd_);
     impl_->cache_fd_ = -1;
@@ -357,6 +377,8 @@ void KnxdClient::invalidate_cache() {
 }
 
 int* KnxdClient::ensure_cache_connection() {
+  std::lock_guard<std::recursive_mutex> cache_lock(impl_->cache_mutex);
+
   if (impl_->cache_fd_ >= 0) {
     // Verify the cache connection is still alive (knxd may have restarted).
     struct pollfd pfd = {};
@@ -369,14 +391,25 @@ int* KnxdClient::ensure_cache_connection() {
       ::close(impl_->cache_fd_);
       impl_->cache_fd_ = -1;
       impl_->cache_read_buffer_.clear();
-      while (!impl_->pre_counted_telegrams_.empty())
-        impl_->pre_counted_telegrams_.pop();
+      {
+        std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
+        while (!impl_->pre_counted_telegrams_.empty())
+          impl_->pre_counted_telegrams_.pop();
+      }
     } else {
       return &impl_->cache_fd_;
     }
   }
 
-  std::cerr << "[DEBUG] cache_connect: opening to " << impl_->socket_path_ << std::endl;
+  // Copy socket_path_ under the main mutex to avoid a data race with
+  // connect() or reconnect() which may be modifying it concurrently.
+  std::string path;
+  {
+    std::lock_guard<std::recursive_mutex> main_lock(impl_->mutex);
+    path = impl_->socket_path_;
+  }
+
+  std::cerr << "[DEBUG] cache_connect: opening to " << path << std::endl;
 
   impl_->cache_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
   if (impl_->cache_fd_ < 0) {
@@ -387,13 +420,13 @@ int* KnxdClient::ensure_cache_connection() {
   struct sockaddr_un addr;
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  if (impl_->socket_path_.size() >= sizeof(addr.sun_path)) {
+  if (path.size() >= sizeof(addr.sun_path)) {
     std::cerr << "[DEBUG] cache_connect: path too long" << std::endl;
     ::close(impl_->cache_fd_);
     impl_->cache_fd_ = -1;
     return nullptr;
   }
-  std::memcpy(addr.sun_path, impl_->socket_path_.data(), impl_->socket_path_.size());
+  std::memcpy(addr.sun_path, path.data(), path.size());
 
   if (::connect(impl_->cache_fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
     std::cerr << "[DEBUG] cache_connect: connect() failed: " << strerror(errno) << std::endl;
@@ -413,7 +446,7 @@ int* KnxdClient::ensure_cache_connection() {
 }
 
 std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, bool nowait) {
-  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  std::lock_guard<std::recursive_mutex> lock(impl_->cache_mutex);
 
   // Helper: perform one cache_read attempt. Returns nullopt on failure,
   // where the failure may be due to a connection error (retryable) or
@@ -587,16 +620,19 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
 
   // Check pre-counted queue first (telegrams already parsed and counted
   // during cache_read). Do NOT increment telegram_count_ for these.
-  if (!impl_->pre_counted_telegrams_.empty()) {
-    auto& front = impl_->pre_counted_telegrams_.front();
-    out_group_addr = front.first;
-    out_apdu = std::move(front.second);
-    impl_->pre_counted_telegrams_.pop();
+  {
+    std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
+    if (!impl_->pre_counted_telegrams_.empty()) {
+      auto& front = impl_->pre_counted_telegrams_.front();
+      out_group_addr = front.first;
+      out_apdu = std::move(front.second);
+      impl_->pre_counted_telegrams_.pop();
 
-    DebugLog::knxd_recv("apdu_packet", KnxGroupAddress::from_eibaddr(out_group_addr).to_string(),
-                        hex_encode(out_apdu.data(), out_apdu.size()));
+      DebugLog::knxd_recv("apdu_packet", KnxGroupAddress::from_eibaddr(out_group_addr).to_string(),
+                          hex_encode(out_apdu.data(), out_apdu.size()));
 
-    return true;
+      return true;
+    }
   }
 
   // Try non-blocking read of message (uses internal buffer)
@@ -657,7 +693,7 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
 }
 
 std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start, int timeout_sec) {
-  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  std::lock_guard<std::recursive_mutex> lock(impl_->cache_mutex);
 
   // Retry helper: if knxd restarts during the long-poll, reconnect and retry
   // with the remaining time. We track the deadline outside the retry loop.
