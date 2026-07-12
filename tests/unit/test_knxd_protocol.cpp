@@ -100,9 +100,10 @@ TEST(KnxAddressTest, FromCometvisuWithNamespace) {
 }
 
 TEST(KnxAddressTest, FromCometvisuDefaultNamespace) {
+  // With default namespace empty, no-colon addresses get empty namespace.
   auto addr = KnxAddress::from_cometvisu("1/2/3");
   ASSERT_TRUE(addr.has_value());
-  EXPECT_EQ(addr->ns, "KNX");
+  EXPECT_EQ(addr->ns, "");
   EXPECT_EQ(addr->group.main, 1);
 }
 

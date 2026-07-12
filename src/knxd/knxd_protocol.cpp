@@ -76,14 +76,16 @@ KnxGroupAddress KnxGroupAddress::from_eibaddr(uint16_t addr) {
 
 // ---- KnxAddress ----
 
+std::string KnxAddress::default_namespace_;
+
 std::optional<KnxAddress> KnxAddress::from_cometvisu(std::string_view str) {
   auto colon = str.find(':');
   if (colon == std::string_view::npos) {
-    // No namespace: assume "KNX" as default
+    // No namespace: use the configured default namespace (empty by default).
     auto group = KnxGroupAddress::from_string(str);
     if (!group)
       return std::nullopt;
-    return KnxAddress{"KNX", *group};
+    return KnxAddress{default_namespace_, *group};
   }
 
   KnxAddress result;
@@ -96,7 +98,18 @@ std::optional<KnxAddress> KnxAddress::from_cometvisu(std::string_view str) {
 }
 
 std::string KnxAddress::to_cometvisu() const {
+  if (ns.empty()) {
+    return group.to_string();
+  }
   return ns + ":" + group.to_string();
+}
+
+void KnxAddress::set_default_namespace(std::string_view ns) {
+  default_namespace_ = ns;
+}
+
+std::string_view KnxAddress::get_default_namespace() {
+  return default_namespace_;
 }
 
 // ---- APDU ----

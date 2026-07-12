@@ -21,6 +21,7 @@
 
 #include "fcgi/fcgi_server.h"
 #include "knxd/knxd_client.h"
+#include "knxd/knxd_protocol.h"
 #include "router/router.h"
 #include "state/session_store.h"
 #include "util/debug_log.h"
@@ -67,24 +68,27 @@ int main(int argc, char* argv[]) {
       return 0;
     }
     if (arg == "--help" || arg == "-h") {
-      std::cout << application_name() << " " << version() << "\n"
-                << "FastCGI backend bridging CometVisu Protocol to knxd\n"
-                << "\n"
-                << "Usage: cometvisu-knxd-fcgi [OPTION]\n"
-                << "\n"
-                << "Options:\n"
-                << "  --version, -v   Print version information and exit\n"
-                << "  --help, -h      Print this help message and exit\n"
-                << "\n"
-                << "Environment variables:\n"
-                << "  KNXD_SOCKET           Path to the knxd Unix socket (default: /run/knx)\n"
-                << "  FCGI_SOCKET           Direct FCGI socket (unset = spawn-fcgi mode)\n"
-                << "  FCGI_THREADS          Worker threads in direct socket mode (default: 20, "
-                   "max: 256)\n"
-                << "  LONGPOLL_TIMEOUT_SEC  Max seconds to wait in long-poll /r (default: 300)\n"
-                << "  DEBUG_BACKEND         Set to 1 to enable debug logging to stderr\n"
-                << "\n"
-                << "When run without options, starts the FastCGI server loop.\n";
+      std::cout
+          << application_name() << " " << version() << "\n"
+          << "FastCGI backend bridging CometVisu Protocol to knxd\n"
+          << "\n"
+          << "Usage: cometvisu-knxd-fcgi [OPTION]\n"
+          << "\n"
+          << "Options:\n"
+          << "  --version, -v   Print version information and exit\n"
+          << "  --help, -h      Print this help message and exit\n"
+          << "\n"
+          << "Environment variables:\n"
+          << "  KNXD_SOCKET           Path to the knxd Unix socket (default: /run/knx)\n"
+          << "  FCGI_SOCKET           Direct FCGI socket (unset = spawn-fcgi mode)\n"
+          << "  FCGI_THREADS          Worker threads in direct socket mode (default: 20, "
+             "max: 256)\n"
+          << "  LONGPOLL_TIMEOUT_SEC  Max seconds to wait in long-poll /r (default: 300)\n"
+          << "  ADDRESS_PREFIX        Namespace prefix for addresses without explicit prefix\n"
+          << "                        (default: empty = no prefix, e.g. set to \"KNX\")\n"
+          << "  DEBUG_BACKEND         Set to 1 to enable debug logging to stderr\n"
+          << "\n"
+          << "When run without options, starts the FastCGI server loop.\n";
       return 0;
     }
   }
@@ -105,6 +109,13 @@ int main(int argc, char* argv[]) {
   const char* knxd_socket = get_env_default("KNXD_SOCKET", "/run/knx");
   int longpoll_timeout = parse_env_int("LONGPOLL_TIMEOUT_SEC", 300, 1, kMaxLongpollTimeoutSec);
   int fcgi_threads = parse_env_int("FCGI_THREADS", 20, 1, 256);
+
+  // ---- Address prefix (namespace) ----
+  // When the client sends addresses without a namespace prefix (no colon),
+  // this value is used as the default namespace. Default: empty (no prefix).
+  // Set ADDRESS_PREFIX=KNX to restore the old "KNX:1/2/3" format.
+  const char* address_prefix = get_env_default("ADDRESS_PREFIX", "");
+  KnxAddress::set_default_namespace(address_prefix);
 
   // ---- Initialize components ----
   KnxdClient knxd;

@@ -40,10 +40,10 @@ TEST_F(ReadHandlerTest, ReadFromKnxdCacheWithTimeout) {
   std::vector<uint8_t> data = {0x0C, 0x6F};
   knxd_.set_cached_value(0x0A03, data);
 
-  auto result = handler.handle("a=KNX:1/2/3&t=30");
+  auto result = handler.handle("a=1/2/3&t=30");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
 }
 
@@ -54,10 +54,10 @@ TEST_F(ReadHandlerTest, ReadFromKnxdCacheTimeoutZero) {
   std::vector<uint8_t> data = {0x42};
   knxd_.set_cached_value(0x0A03, data);
 
-  auto result = handler.handle("a=KNX:1/2/3&t=0");
+  auto result = handler.handle("a=1/2/3&t=0");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // Must include the index
   EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
@@ -76,7 +76,7 @@ TEST_F(ReadHandlerTest, TimeoutZeroCacheMissSendsReadTelegram) {
   // Set up cache_last_updates_2 to return immediately with no changes
   knxd_.set_last_updates_result(0, {}, 5);
 
-  auto result = handler.handle("a=KNX:1/2/3&t=0");
+  auto result = handler.handle("a=1/2/3&t=0");
 
   EXPECT_EQ(result.http_status, 200);
   // Should have empty "d" object and an index (immediate response)
@@ -97,14 +97,14 @@ TEST_F(ReadHandlerTest, TimeoutZeroMixedCacheAndUncached) {
   // Set up cache_last_updates_2 to return immediately
   knxd_.set_last_updates_result(0, {}, 5);
 
-  auto result = handler.handle("a=KNX:1/2/3&a=KNX:1/3/4&t=0");
+  auto result = handler.handle("a=1/2/3&a=1/3/4&t=0");
 
   EXPECT_EQ(result.http_status, 200);
   // Cached address should be in response (found during initial read)
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // Uncached address should NOT be in response
-  EXPECT_EQ(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_EQ(result.body.find("1/3/4"), std::string::npos);
   // Index must be included
   EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
 
@@ -117,7 +117,7 @@ TEST_F(ReadHandlerTest, NegativeTimeoutCacheMiss) {
   ReadHandler handler(knxd_, sessions_);
 
   // No knxd cache value — t < 0 returns 200 with empty data
-  auto result = handler.handle("a=KNX:1/2/3&t=-1");
+  auto result = handler.handle("a=1/2/3&t=-1");
   EXPECT_EQ(result.http_status, 200);
   // Should have empty "d" object
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
@@ -136,12 +136,12 @@ TEST_F(ReadHandlerTest, MultipleAddresses) {
   knxd_.set_cached_value(0x0A03, {0x42});
   knxd_.set_cached_value(0x0B04, {0x0C, 0x6F});
 
-  auto result = handler.handle("a=KNX:1/2/3&a=KNX:1/3/4&t=30");
+  auto result = handler.handle("a=1/2/3&a=1/3/4&t=30");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
-  EXPECT_NE(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_NE(result.body.find("1/3/4"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
 }
 
@@ -153,10 +153,10 @@ TEST_F(ReadHandlerTest, LongPollGetsTelegram) {
   knxd_.set_cached_value(0x0A03, {0x42});
 
   // Long-poll (no timeout parameter)
-  auto result = handler.handle("a=KNX:1/2/3");
+  auto result = handler.handle("a=1/2/3");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
 }
 
@@ -170,14 +170,14 @@ TEST_F(ReadHandlerTest, LongPollSkipsNonMatchingBufferedTelegram) {
   knxd_.set_cached_value(0x0A03, {0x42});        // 1/2/3 — matching
 
   // Long-poll (no timeout parameter), only subscribed to 1/2/3
-  auto result = handler.handle("a=KNX:1/2/3");
+  auto result = handler.handle("a=1/2/3");
 
   EXPECT_EQ(result.http_status, 200);
   // Only the matching address should appear
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // Non-matching address should NOT appear
-  EXPECT_EQ(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_EQ(result.body.find("1/3/4"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, LongPollDrainsAllBufferedWhenNoMatch) {
@@ -190,7 +190,7 @@ TEST_F(ReadHandlerTest, LongPollDrainsAllBufferedWhenNoMatch) {
   knxd_.set_cached_value(0x0B04, {0x0C, 0x6F});  // 1/3/4 — not subscribed
   knxd_.set_cached_value(0x0C05, {0x01});        // 1/4/5 — not subscribed
 
-  auto result = handler.handle("a=KNX:1/2/3");
+  auto result = handler.handle("a=1/2/3");
 
   EXPECT_EQ(result.http_status, 200);
   // Should have empty "d" object and an index
@@ -202,7 +202,7 @@ TEST_F(ReadHandlerTest, IndexIncluded) {
   ReadHandler handler(knxd_, sessions_);
 
   knxd_.set_cached_value(0x0A03, {0x42});
-  auto result = handler.handle("a=KNX:1/2/3&t=30");
+  auto result = handler.handle("a=1/2/3&t=30");
 
   EXPECT_EQ(result.http_status, 200);
   // Index starts at 0 (no telegrams received yet)
@@ -216,7 +216,7 @@ TEST_F(ReadHandlerTest, IndexIncrementsAfterTelegram) {
   knxd_.set_last_updates_result(0, {0x0A03}, 5);
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3&t=30");
+  auto result = handler.handle("a=1/2/3&t=30");
 
   EXPECT_EQ(result.http_status, 200);
   // i should be the new_position from cache_last_updates_2 (5)
@@ -230,7 +230,7 @@ TEST_F(ReadHandlerTest, IndexIncrementsForEachBufferedTelegram) {
   knxd_.set_last_updates_result(0, {0x0A03}, 42);
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3&t=30");
+  auto result = handler.handle("a=1/2/3&t=30");
 
   EXPECT_EQ(result.http_status, 200);
   // i should be the new_position from cache_last_updates_2 (42)
@@ -241,11 +241,11 @@ TEST_F(ReadHandlerTest, InvalidAddressIgnored) {
   ReadHandler handler(knxd_, sessions_);
 
   knxd_.set_cached_value(0x0A03, {0x42});
-  auto result = handler.handle("a=KNX:1/2/3&a=invalid&t=30");
+  auto result = handler.handle("a=1/2/3&a=invalid&t=30");
 
   // Should still return the valid address
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
 }
 
 // Verifies that a long-poll with a non-zero index (i= parameter) detects
@@ -262,10 +262,10 @@ TEST_F(ReadHandlerTest, LongPollWithIndexDetectsPendingUpdate) {
   knxd_.set_last_updates_result(5, {0x0A03}, 10);
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3&i=5");
+  auto result = handler.handle("a=1/2/3&i=5");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // Index must advance to the new position from cache_last_updates_2
   EXPECT_NE(result.body.find("\"i\":\"10\""), std::string::npos);
@@ -288,14 +288,14 @@ TEST_F(ReadHandlerTest, LongPollWithIndexSkipsNonMatchingThenFindsMatch) {
   knxd_.set_cached_value(0x0A03, {0x42});
 
   // Long-poll subscribed only to 1/2/3
-  auto result = handler.handle("a=KNX:1/2/3&i=5");
+  auto result = handler.handle("a=1/2/3&i=5");
 
   EXPECT_EQ(result.http_status, 200);
   // Must include the matching address (1/2/3 = 0x0A03)
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // Non-matching address must NOT appear
-  EXPECT_EQ(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_EQ(result.body.find("1/3/4"), std::string::npos);
   // Index must advance to the final position
   EXPECT_NE(result.body.find("\"i\":\"10\""), std::string::npos);
 }
@@ -315,10 +315,10 @@ TEST_F(ReadHandlerTest, LongPollContinuesPollingAfterKnxdEmptyResponse) {
   knxd_.set_cached_value(0x0A03, {0x42});
 
   // Long-poll with i=11028, no t (default timeout)
-  auto result = handler.handle("a=KNX:1/2/3&i=11028");
+  auto result = handler.handle("a=1/2/3&i=11028");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   EXPECT_NE(result.body.find("\"i\":\"11029\""), std::string::npos);
 }
@@ -334,10 +334,10 @@ TEST_F(ReadHandlerTest, RecoversFromCacheUpdatesFailure) {
   knxd_.set_last_updates_result(0, {0x0A03}, 10);
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3&t=30");
+  auto result = handler.handle("a=1/2/3&t=30");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   EXPECT_NE(result.body.find("\"i\":\"10\""), std::string::npos);
 }
@@ -354,10 +354,10 @@ TEST_F(ReadHandlerTest, RecoversFromCacheReadFailureInPollLoop) {
   // The second cache_read succeeds (after internal reconnect in KnxdClient)
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3&t=30");
+  auto result = handler.handle("a=1/2/3&t=30");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   // The cache_read retry in KnxdClient should recover the value
   EXPECT_NE(result.body.find("42"), std::string::npos);
 }
@@ -371,7 +371,7 @@ TEST_F(ReadHandlerTest, HandlesPersistentKnxdOutage) {
   // All cache_last_updates_2 calls fail
   knxd_.set_cache_last_updates_fail_count(100);
 
-  auto result = handler.handle("a=KNX:1/2/3&t=1");
+  auto result = handler.handle("a=1/2/3&t=1");
 
   EXPECT_EQ(result.http_status, 200);
   // Should have empty data object and an index
@@ -381,13 +381,13 @@ TEST_F(ReadHandlerTest, HandlesPersistentKnxdOutage) {
 
 TEST_F(ReadHandlerTest, InvalidTimeoutReturns400) {
   ReadHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=KNX:1/2/3&t=abc");
+  auto result = handler.handle("a=1/2/3&t=abc");
   EXPECT_EQ(result.http_status, 400);
 }
 
 TEST_F(ReadHandlerTest, InvalidTimeoutTrailingGarbage) {
   ReadHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=KNX:1/2/3&t=5xyz");
+  auto result = handler.handle("a=1/2/3&t=5xyz");
   EXPECT_EQ(result.http_status, 400);
 }
 
@@ -396,14 +396,14 @@ TEST_F(ReadHandlerTest, SessionInvalidReturns401) {
   (void)sessions_.create_session(false);
 
   ReadHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=KNX:1/2/3&t=30&s=nonexistent");
+  auto result = handler.handle("a=1/2/3&t=30&s=nonexistent");
   EXPECT_EQ(result.http_status, 401);
 }
 
 TEST_F(ReadHandlerTest, AnonymousSessionAlwaysOk) {
   ReadHandler handler(knxd_, sessions_);
   knxd_.set_cached_value(0x0A03, {0x42});
-  auto result = handler.handle("a=KNX:1/2/3&t=30&s=0");
+  auto result = handler.handle("a=1/2/3&t=30&s=0");
   EXPECT_EQ(result.http_status, 200);
 }
 
@@ -412,14 +412,14 @@ TEST_F(ReadHandlerTest, ValidSessionProceeds) {
 
   ReadHandler handler(knxd_, sessions_);
   knxd_.set_cached_value(0x0A03, {0x42});
-  auto result = handler.handle("a=KNX:1/2/3&t=30&s=" + sid);
+  auto result = handler.handle("a=1/2/3&t=30&s=" + sid);
   EXPECT_EQ(result.http_status, 200);
 }
 
 TEST_F(ReadHandlerTest, LongPollTimeoutReturnsEmpty) {
   ReadHandler handler(knxd_, sessions_);
   // No telegrams enqueued — long-poll should time out quickly due to mock fd=-1
-  auto result = handler.handle("a=KNX:1/2/3");
+  auto result = handler.handle("a=1/2/3");
   EXPECT_EQ(result.http_status, 200);
   // Should have empty "d" object and an index
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
@@ -431,7 +431,7 @@ TEST_F(ReadHandlerTest, LongPollTimeoutReturnsEmpty) {
 TEST_F(ReadHandlerTest, TimeoutZeroWithCachedValueAndBusyBusReturnsCorrectIndex) {
   // Reproduces: GET /r 's=0&a=7/4/2&t=0' on a busy KNX bus.
   // The knxd cache has the value, and cache_last_updates_2 returns position 42.
-  // Expectation: {"d":{"KNX:7/4/2":"0c6f"},"i":"42"} — not {"d":{},"i":"0"}.
+  // Expectation: {"d":{"7/4/2":"0c6f"},"i":"42"} — not {"d":{},"i":"0"}.
   ReadHandler handler(knxd_, sessions_);
 
   // Cache has the value
@@ -441,11 +441,11 @@ TEST_F(ReadHandlerTest, TimeoutZeroWithCachedValueAndBusyBusReturnsCorrectIndex)
   // cache_last_updates_2 returns position 42 (simulating busy bus)
   knxd_.set_last_updates_result(0, {}, 42);
 
-  auto result = handler.handle("a=KNX:7/4/2&t=0");
+  auto result = handler.handle("a=7/4/2&t=0");
 
   EXPECT_EQ(result.http_status, 200);
   // Must include the cached value (found during initial read)
-  EXPECT_NE(result.body.find("KNX:7/4/2"), std::string::npos);
+  EXPECT_NE(result.body.find("7/4/2"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // i must be the new_position from cache_last_updates_2 (42)
   EXPECT_NE(result.body.find("\"i\":\"42\""), std::string::npos);
@@ -466,11 +466,11 @@ TEST_F(ReadHandlerTest, InitialIndexReturnsCachedValueImmediately) {
   knxd_.set_last_updates_result(0, {}, 42);
 
   // No 't' parameter but i=0: initial request should check cache first
-  auto result = handler.handle("a=KNX:7/4/2&i=0");
+  auto result = handler.handle("a=7/4/2&i=0");
 
   EXPECT_EQ(result.http_status, 200);
   // Must return the cached value immediately, not block
-  EXPECT_NE(result.body.find("KNX:7/4/2"), std::string::npos);
+  EXPECT_NE(result.body.find("7/4/2"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // i must reflect the new_position from cache_last_updates_2 (42)
   EXPECT_NE(result.body.find("\"i\":\"42\""), std::string::npos);
@@ -493,11 +493,11 @@ TEST_F(ReadHandlerTest, TimeoutParamIsSimplePollTimeout) {
   knxd_.set_last_updates_result(0, {0x0A03}, 5);
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3&t=5");
+  auto result = handler.handle("a=1/2/3&t=5");
 
   EXPECT_EQ(result.http_status, 200);
   // Should return the changed value from the poll loop
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // i should be the new position (5), not telegram count
   EXPECT_NE(result.body.find("\"i\":\"5\""), std::string::npos);
@@ -515,13 +515,13 @@ TEST_F(ReadHandlerTest, TimeoutZeroForcesInitialRead) {
   // Set up cache_last_updates_2 to return immediately with no changes
   knxd_.set_last_updates_result(0, {}, 5);
 
-  auto result = handler.handle("a=KNX:1/2/3&a=KNX:1/3/4&t=0");
+  auto result = handler.handle("a=1/2/3&a=1/3/4&t=0");
 
   EXPECT_EQ(result.http_status, 200);
   // Both cached values should be in the initial read response
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
-  EXPECT_NE(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_NE(result.body.find("1/3/4"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // i should be the end position from cache_last_updates_2
   EXPECT_NE(result.body.find("\"i\":\"5\""), std::string::npos);
@@ -535,7 +535,7 @@ TEST_F(ReadHandlerTest, TimeoutNegativeIsTreatedAsNormalTimeout) {
   // Set up cache_last_updates_2 to return immediately
   knxd_.set_last_updates_result(0, {}, 1);
 
-  auto result = handler.handle("a=KNX:1/2/3&t=-1");
+  auto result = handler.handle("a=1/2/3&t=-1");
   EXPECT_EQ(result.http_status, 200);
   // Should not be a 400 (invalid timeout)
   EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
@@ -552,10 +552,10 @@ TEST_F(ReadHandlerTest, IndexParamUsedAsStartPositionForCacheLastUpdates) {
   knxd_.set_last_updates_result(7, {0x0A03}, 12);
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3&i=7");
+  auto result = handler.handle("a=1/2/3&i=7");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // i in response should be the new end position (12)
   EXPECT_NE(result.body.find("\"i\":\"12\""), std::string::npos);
@@ -571,11 +571,11 @@ TEST_F(ReadHandlerTest, IndexZeroTriggersInitialReadWithCacheFirst) {
   // Set up cache_last_updates_2 to return immediately with no changes
   knxd_.set_last_updates_result(0, {}, 5);
 
-  auto result = handler.handle("a=KNX:1/2/3&i=0");
+  auto result = handler.handle("a=1/2/3&i=0");
 
   EXPECT_EQ(result.http_status, 200);
   // Initial cache read should find the value
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
 }
 
@@ -591,7 +591,7 @@ TEST_F(ReadHandlerTest, IndexParamResponseIsNewPositionNotTelegramCount) {
   knxd_.set_last_updates_result(0, {0x0A03}, 5);
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3");
+  auto result = handler.handle("a=1/2/3");
 
   EXPECT_EQ(result.http_status, 200);
   // i must be 5 (the new_position), NOT 999 (telegram_count)
@@ -611,13 +611,13 @@ TEST_F(ReadHandlerTest, MultipleChangedAddressesInOneResponse) {
   knxd_.set_cached_value(0x0A03, {0x42});        // 1/2/3
   knxd_.set_cached_value(0x0B04, {0x0C, 0x6F});  // 1/3/4
 
-  auto result = handler.handle("a=KNX:1/2/3&a=KNX:1/3/4");
+  auto result = handler.handle("a=1/2/3&a=1/3/4");
 
   EXPECT_EQ(result.http_status, 200);
   // Both addresses must appear in the response
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
-  EXPECT_NE(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_NE(result.body.find("1/3/4"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // i should be the new position
   EXPECT_NE(result.body.find("\"i\":\"10\""), std::string::npos);
@@ -633,14 +633,14 @@ TEST_F(ReadHandlerTest, OnlySubscribedAddressesInMultiResponse) {
   knxd_.set_cached_value(0x0A03, {0x42});        // 1/2/3 — subscribed
   knxd_.set_cached_value(0x0B04, {0x0C, 0x6F});  // 1/3/4 — NOT subscribed
 
-  auto result = handler.handle("a=KNX:1/2/3");
+  auto result = handler.handle("a=1/2/3");
 
   EXPECT_EQ(result.http_status, 200);
   // 1/2/3 should be in response
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // 1/3/4 should NOT be in response
-  EXPECT_EQ(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_EQ(result.body.find("1/3/4"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, MultiResponseDeduplicatesAddresses) {
@@ -652,13 +652,13 @@ TEST_F(ReadHandlerTest, MultiResponseDeduplicatesAddresses) {
   knxd_.set_last_updates_result(0, {0x0A03, 0x0A03}, 10);
   knxd_.set_cached_value(0x0A03, {0x42});
 
-  auto result = handler.handle("a=KNX:1/2/3");
+  auto result = handler.handle("a=1/2/3");
 
   EXPECT_EQ(result.http_status, 200);
   // Should appear exactly once
-  auto pos = result.body.find("KNX:1/2/3");
+  auto pos = result.body.find("1/2/3");
   EXPECT_NE(pos, std::string::npos);
-  EXPECT_EQ(result.body.find("KNX:1/2/3", pos + 1), std::string::npos);
+  EXPECT_EQ(result.body.find("1/2/3", pos + 1), std::string::npos);
 }
 
 // ---- Position-based polling (issue #2) ----
@@ -676,11 +676,11 @@ TEST_F(ReadHandlerTest, UsesCacheLastUpdates2ForPolling) {
   knxd_.set_last_updates_result(0, {0x0B04}, 10);
   knxd_.set_cached_value(0x0B04, {0x0C, 0x6F});
 
-  auto result = handler.handle("a=KNX:1/2/3&a=KNX:1/3/4");
+  auto result = handler.handle("a=1/2/3&a=1/3/4");
 
   EXPECT_EQ(result.http_status, 200);
   // Should return the cache_last_updates_2 result (1/3/4), not the telegram (1/2/3)
-  EXPECT_NE(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_NE(result.body.find("1/3/4"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // 1/2/3 came from the old group socket mechanism — should NOT appear
   // because we use cache_last_updates_2 now
@@ -692,7 +692,7 @@ TEST_F(ReadHandlerTest, CacheLastUpdates2TimeoutReturnsEmpty) {
   ReadHandler handler(knxd_, sessions_);
 
   // No last_updates configured → cache_last_updates_2 returns nullopt
-  auto result = handler.handle("a=KNX:1/2/3&t=1");
+  auto result = handler.handle("a=1/2/3&t=1");
 
   EXPECT_EQ(result.http_status, 200);
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
@@ -712,14 +712,14 @@ TEST_F(ReadHandlerTest, InitialReadChecksAllRequestedAddresses) {
   // Set up cache_last_updates_2 to finish the poll loop
   knxd_.set_last_updates_result(0, {}, 5);
 
-  auto result = handler.handle("a=KNX:1/2/3&a=KNX:1/3/4&a=KNX:1/4/5&i=0");
+  auto result = handler.handle("a=1/2/3&a=1/3/4&a=1/4/5&i=0");
 
   EXPECT_EQ(result.http_status, 200);
   // Both cached values should appear
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
-  EXPECT_NE(result.body.find("KNX:1/3/4"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/3/4"), std::string::npos);
   // Uncached address should not appear
-  EXPECT_EQ(result.body.find("KNX:1/4/5"), std::string::npos);
+  EXPECT_EQ(result.body.find("1/4/5"), std::string::npos);
 }
 
 // ---- APCI filtering ----
@@ -739,10 +739,10 @@ TEST_F(ReadHandlerTest, FiltersOutReadApduFromCache) {
   knxd_.set_cached_value(0x0A03, {0x42});
   knxd_.set_last_updates_result(0, {}, 5);
 
-  auto result = handler.handle("a=KNX:1/2/3&i=0");
+  auto result = handler.handle("a=1/2/3&i=0");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
 }
 
@@ -754,10 +754,10 @@ TEST_F(ReadHandlerTest, IncludesWriteApduFromCache) {
 
   knxd_.set_last_updates_result(0, {}, 5);
 
-  auto result = handler.handle("a=KNX:1/2/3&i=0");
+  auto result = handler.handle("a=1/2/3&i=0");
 
   EXPECT_EQ(result.http_status, 200);
-  EXPECT_NE(result.body.find("KNX:1/2/3"), std::string::npos);
+  EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
 }
 

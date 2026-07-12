@@ -124,7 +124,9 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
 
   // Helper: build the key for an address in the JSON response.
   auto addr_key = [](uint16_t eib_addr) -> std::string {
-    return KnxAddress{"KNX", KnxGroupAddress::from_eibaddr(eib_addr)}.to_cometvisu();
+    return KnxAddress{std::string{KnxAddress::get_default_namespace()},
+                      KnxGroupAddress::from_eibaddr(eib_addr)}
+        .to_cometvisu();
   };
 
   JsonBuilder json;

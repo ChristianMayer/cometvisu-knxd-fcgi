@@ -81,3 +81,63 @@ TEST(KnxGroupAddressEquality, Different) {
   KnxGroupAddress b{1, 2, 4};
   EXPECT_NE(a, b);
 }
+
+// ---- Configurable default namespace tests ----
+
+TEST(KnxAddressDefaultNamespace, DefaultIsEmpty) {
+  // The default namespace should be empty (no prefix).
+  EXPECT_EQ(KnxAddress::get_default_namespace(), "");
+}
+
+TEST(KnxAddressDefaultNamespace, FromCometvisuNoColonEmptyDefault) {
+  // With empty default namespace and no colon in the input,
+  // the namespace should be empty and the whole string is the address.
+  auto addr = KnxAddress::from_cometvisu("1/2/3");
+  ASSERT_TRUE(addr.has_value());
+  EXPECT_EQ(addr->ns, "");
+  EXPECT_EQ(addr->group.main, 1);
+  EXPECT_EQ(addr->group.middle, 2);
+  EXPECT_EQ(addr->group.sub, 3);
+}
+
+TEST(KnxAddressDefaultNamespace, ToCometvisuEmptyNamespace) {
+  // With empty namespace, to_cometvisu should produce just "X/Y/Z" (no prefix).
+  KnxAddress addr{"", KnxGroupAddress{1, 2, 3}};
+  EXPECT_EQ(addr.to_cometvisu(), "1/2/3");
+}
+
+TEST(KnxAddressDefaultNamespace, ToCometvisuNonEmptyNamespace) {
+  // With a non-empty namespace, to_cometvisu should produce "NS:X/Y/Z".
+  KnxAddress addr{"KNX", KnxGroupAddress{1, 2, 3}};
+  EXPECT_EQ(addr.to_cometvisu(), "KNX:1/2/3");
+}
+
+TEST(KnxAddressDefaultNamespace, SetAndGetDefaultNamespace) {
+  // Setting the default namespace should be reflected in get_default_namespace.
+  KnxAddress::set_default_namespace("CUSTOM");
+  EXPECT_EQ(KnxAddress::get_default_namespace(), "CUSTOM");
+  // Reset to empty for other tests.
+  KnxAddress::set_default_namespace("");
+}
+
+TEST(KnxAddressDefaultNamespace, FromCometvisuNoColonCustomDefault) {
+  // With a custom default namespace and no colon, namespace = the custom one.
+  KnxAddress::set_default_namespace("CUSTOM");
+  auto addr = KnxAddress::from_cometvisu("1/2/3");
+  ASSERT_TRUE(addr.has_value());
+  EXPECT_EQ(addr->ns, "CUSTOM");
+  EXPECT_EQ(addr->group.main, 1);
+  // Reset
+  KnxAddress::set_default_namespace("");
+}
+
+TEST(KnxAddressDefaultNamespace, FromCometvisuWithColonOverridesDefault) {
+  // Explicit namespace in the input always takes priority over the default.
+  KnxAddress::set_default_namespace("DEFAULT");
+  auto addr = KnxAddress::from_cometvisu("EXPLICIT:1/2/3");
+  ASSERT_TRUE(addr.has_value());
+  EXPECT_EQ(addr->ns, "EXPLICIT");
+  EXPECT_EQ(addr->group.main, 1);
+  // Reset
+  KnxAddress::set_default_namespace("");
+}

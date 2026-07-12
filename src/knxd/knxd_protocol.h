@@ -50,18 +50,36 @@ struct KnxGroupAddress {
 
 /// KNX address namespace prefix and group address.
 /// CometVisu format: "NAMESPACE:ADDRESS", e.g. "KNX:1/2/3".
+///
+/// When no namespace prefix is present in the input (no colon), the configured
+/// default namespace is used. The default namespace is empty by default,
+/// meaning addresses are just "X/Y/Z" with no prefix. Set via
+/// set_default_namespace() or the ADDRESS_PREFIX environment variable.
 struct KnxAddress {
   std::string ns;         // namespace, e.g. "KNX"
   KnxGroupAddress group;  // group address part
 
   /// Parse a CometVisu address string.
+  /// If the string contains a colon, the part before the colon is the namespace.
+  /// If there is no colon, the configured default namespace is used.
   /// Returns std::nullopt if the format is invalid.
   [[nodiscard]] static std::optional<KnxAddress> from_cometvisu(std::string_view str);
 
   /// Convert back to CometVisu address format.
+  /// If the namespace is empty, produces just "X/Y/Z" (no prefix).
+  /// If the namespace is non-empty, produces "NAMESPACE:X/Y/Z".
   [[nodiscard]] std::string to_cometvisu() const;
 
+  /// Set the default namespace used when parsing addresses without a colon.
+  static void set_default_namespace(std::string_view ns);
+
+  /// Get the current default namespace.
+  [[nodiscard]] static std::string_view get_default_namespace();
+
   bool operator==(const KnxAddress&) const = default;
+
+private:
+  static std::string default_namespace_;
 };
 
 /// APDU types for group communication.
