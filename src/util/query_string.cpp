@@ -24,10 +24,10 @@ namespace cvknxd {
 inline constexpr size_t kMaxQueryParams = 100;
 
 /// Maximum number of values per single key.
-inline constexpr size_t kMaxValuesPerKey = 128;
+inline constexpr size_t kMaxValuesPerKey = 250;
 
 /// Absolute maximum total key=value pairs parsed from a query string.
-inline constexpr size_t kMaxTotalPairs = 200;
+inline constexpr size_t kMaxTotalPairs = 256;
 
 namespace {
 
