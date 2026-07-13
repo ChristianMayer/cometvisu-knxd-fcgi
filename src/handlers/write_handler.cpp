@@ -48,13 +48,25 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
   }
 
   // Decode hex value — if invalid, nothing to write, return 200.
-  auto data = hex_decode(*value_opt);
-  if (data.empty() && !value_opt->empty()) {
+  auto hex_data = hex_decode(*value_opt);
+  if (hex_data.empty() && !value_opt->empty()) {
     return result;
   }
 
-  // Build APDU for write
-  auto apdu = build_apdu(ApduType::Write, data);
+  // Validate that the first data byte contains the Write APCI (A_GroupValue_Write).
+  // The reference eibwrite-cgi.c expects the hex value "v" to include the APCI byte
+  // (e.g. "v=800c6f" for a 2-byte value 0x0c6f). We prepend only the leading 0x00
+  // to form the complete APDU: [0x00, APCI, value_bytes...].
+  if (hex_data.empty() || (hex_data[0] & 0x80) != 0x80) {
+    // Only A_GroupValue_Write is allowed (matching reference check).
+    return result;
+  }
+
+  // Build APDU: [0x00] + [APCI + value_bytes from hex input]
+  std::vector<uint8_t> apdu;
+  apdu.reserve(1 + hex_data.size());
+  apdu.push_back(0x00);
+  apdu.insert(apdu.end(), hex_data.begin(), hex_data.end());
 
   // Write to each address
   bool any_valid = false;

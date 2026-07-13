@@ -36,7 +36,9 @@ protected:
 TEST_F(WriteHandlerTest, WriteSingleAddress) {
   WriteHandler handler(knxd_, sessions_);
 
-  auto result = handler.handle("a=KNX:1/2/3&v=42");
+  // v must include the APCI byte (0x80 = A_GroupValue_Write).
+  // This matches the reference eibwrite-cgi.c convention.
+  auto result = handler.handle("a=KNX:1/2/3&v=8042");
 
   EXPECT_EQ(result.http_status, 200);
 
@@ -44,16 +46,19 @@ TEST_F(WriteHandlerTest, WriteSingleAddress) {
   ASSERT_EQ(sent.size(), 1);
   EXPECT_EQ(sent[0].group_addr, 0x0A03);  // 1/2/3
 
-  // Check APDU: 0x00 0x80|(0x42&0x3F) (Write + packed value)
-  ASSERT_EQ(sent[0].apdu.size(), 2);
+  // APDU: [0x00] + hex-decoded value = [0x00, 0x80, 0x42]
+  ASSERT_EQ(sent[0].apdu.size(), 3);
   EXPECT_EQ(sent[0].apdu[0], 0x00);
-  EXPECT_EQ(sent[0].apdu[1], 0x80 | (0x42 & 0x3F));
+  EXPECT_EQ(sent[0].apdu[1], 0x80);  // APCI byte
+  EXPECT_EQ(sent[0].apdu[2], 0x42);  // value byte
 }
 
 TEST_F(WriteHandlerTest, WriteMultiByteValue) {
   WriteHandler handler(knxd_, sessions_);
 
-  auto result = handler.handle("a=KNX:1/2/3&v=0c6f");
+  // v must include the APCI byte (0x80 = A_GroupValue_Write).
+  // This matches the reference eibwrite-cgi.c convention.
+  auto result = handler.handle("a=KNX:1/2/3&v=800c6f");
 
   EXPECT_EQ(result.http_status, 200);
 
@@ -61,7 +66,7 @@ TEST_F(WriteHandlerTest, WriteMultiByteValue) {
   ASSERT_EQ(sent.size(), 1);
   ASSERT_EQ(sent[0].apdu.size(), 4);
   EXPECT_EQ(sent[0].apdu[0], 0x00);
-  EXPECT_EQ(sent[0].apdu[1], 0x80);  // Write, multi-byte
+  EXPECT_EQ(sent[0].apdu[1], 0x80);  // Write APCI
   EXPECT_EQ(sent[0].apdu[2], 0x0C);
   EXPECT_EQ(sent[0].apdu[3], 0x6F);
 }
@@ -69,7 +74,7 @@ TEST_F(WriteHandlerTest, WriteMultiByteValue) {
 TEST_F(WriteHandlerTest, WriteMultipleAddresses) {
   WriteHandler handler(knxd_, sessions_);
 
-  auto result = handler.handle("a=KNX:1/2/3&a=KNX:4/5/6&v=42");
+  auto result = handler.handle("a=KNX:1/2/3&a=KNX:4/5/6&v=8042");
 
   EXPECT_EQ(result.http_status, 200);
 
@@ -81,7 +86,7 @@ TEST_F(WriteHandlerTest, WriteMultipleAddresses) {
 
 TEST_F(WriteHandlerTest, MissingAddress) {
   WriteHandler handler(knxd_, sessions_);
-  auto result = handler.handle("v=42");
+  auto result = handler.handle("v=8042");
   // Missing address: nothing to write, returns 200 (no-op)
   EXPECT_EQ(result.http_status, 200);
   EXPECT_TRUE(knxd_.sent_packets().empty());
@@ -105,8 +110,41 @@ TEST_F(WriteHandlerTest, InvalidHexValue) {
 
 TEST_F(WriteHandlerTest, InvalidAddress) {
   WriteHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=invalid&v=42");
+  auto result = handler.handle("a=invalid&v=8042");
   EXPECT_EQ(result.http_status, 404);
+  EXPECT_TRUE(knxd_.sent_packets().empty());
+}
+
+// The reference eibwrite-cgi.c requires the first hex byte to contain
+// the A_GroupValue_Write APCI (bit 7 must be set). Values without
+// the APCI prefix are silently ignored (return 200, no packet sent).
+TEST_F(WriteHandlerTest, WriteValueWithoutApciIsRejected) {
+  WriteHandler handler(knxd_, sessions_);
+
+  // v=0c6f — first byte 0x0C does not have bit 7 set
+  auto result = handler.handle("a=KNX:1/2/3&v=0c6f");
+  EXPECT_EQ(result.http_status, 200);
+  EXPECT_TRUE(knxd_.sent_packets().empty());
+
+  // v=42 — single byte 0x42 does not have bit 7 set
+  result = handler.handle("a=KNX:1/2/3&v=42");
+  EXPECT_EQ(result.http_status, 200);
+  EXPECT_TRUE(knxd_.sent_packets().empty());
+}
+
+// Verifies that only A_GroupValue_Write (0x80) is accepted.
+// A_GroupValue_Read (0x00) and A_GroupValue_Response (0x40) are rejected.
+TEST_F(WriteHandlerTest, WriteValueWithReadApciIsRejected) {
+  WriteHandler handler(knxd_, sessions_);
+
+  // v=000c6f — first byte 0x00 = Read APCI, not Write
+  auto result = handler.handle("a=KNX:1/2/3&v=000c6f");
+  EXPECT_EQ(result.http_status, 200);
+  EXPECT_TRUE(knxd_.sent_packets().empty());
+
+  // v=400c6f — first byte 0x40 = Response APCI, not Write
+  result = handler.handle("a=KNX:1/2/3&v=400c6f");
+  EXPECT_EQ(result.http_status, 200);
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
 
@@ -115,7 +153,7 @@ TEST_F(WriteHandlerTest, WriteDoesNotNeedLocalCache) {
   // knxd's built-in cache handles storage.
   WriteHandler handler(knxd_, sessions_);
 
-  auto result = handler.handle("a=KNX:1/2/3&v=0c6f");
+  auto result = handler.handle("a=KNX:1/2/3&v=800c6f");
   EXPECT_EQ(result.http_status, 200);
 
   auto sent = knxd_.sent_packets();
@@ -126,7 +164,7 @@ TEST_F(WriteHandlerTest, WriteDoesNotNeedLocalCache) {
 TEST_F(WriteHandlerTest, DefaultNamespace) {
   WriteHandler handler(knxd_, sessions_);
 
-  auto result = handler.handle("a=1/2/3&v=42");
+  auto result = handler.handle("a=1/2/3&v=8042");
 
   EXPECT_EQ(result.http_status, 200);
   auto sent = knxd_.sent_packets();
@@ -138,14 +176,14 @@ TEST_F(WriteHandlerTest, SessionInvalidReturns401) {
   (void)sessions_.create_session(false);
 
   WriteHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=KNX:1/2/3&v=42&s=nonexistent");
+  auto result = handler.handle("a=KNX:1/2/3&v=8042&s=nonexistent");
   EXPECT_EQ(result.http_status, 401);
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
 
 TEST_F(WriteHandlerTest, AnonymousSessionOk) {
   WriteHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=KNX:1/2/3&v=42&s=0");
+  auto result = handler.handle("a=KNX:1/2/3&v=8042&s=0");
   EXPECT_EQ(result.http_status, 200);
   EXPECT_FALSE(knxd_.sent_packets().empty());
 }
@@ -154,7 +192,7 @@ TEST_F(WriteHandlerTest, ValidSessionWrites) {
   auto sid = sessions_.create_session(false);
 
   WriteHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=KNX:1/2/3&v=42&s=" + sid);
+  auto result = handler.handle("a=KNX:1/2/3&v=8042&s=" + sid);
   EXPECT_EQ(result.http_status, 200);
   EXPECT_FALSE(knxd_.sent_packets().empty());
 }

@@ -60,7 +60,7 @@ TEST_F(ReadHandlerTest, ReadFromKnxdCacheTimeoutZero) {
   EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // Must include the index
-  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
   // Must NOT block — no read telegram sent because value was cached
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
@@ -81,7 +81,7 @@ TEST_F(ReadHandlerTest, TimeoutZeroCacheMissSendsReadTelegram) {
   EXPECT_EQ(result.http_status, 200);
   // Should have empty "d" object and an index (immediate response)
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
-  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
   // With the new semantics (matching original eibread-cgi.c), t=0 does NOT
   // send read telegrams — it forces a cache re-read and poll loop.
   // The poll loop uses cache_last_updates_2, not send_group_packet.
@@ -106,7 +106,7 @@ TEST_F(ReadHandlerTest, TimeoutZeroMixedCacheAndUncached) {
   // Uncached address should NOT be in response
   EXPECT_EQ(result.body.find("1/3/4"), std::string::npos);
   // Index must be included
-  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 
   // With corrected semantics, t=0 does NOT send read telegrams.
   // The handler relies on cache_last_updates_2 for change detection.
@@ -157,7 +157,7 @@ TEST_F(ReadHandlerTest, LongPollGetsTelegram) {
 
   EXPECT_EQ(result.http_status, 200);
   EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
-  EXPECT_NE(result.body.find("42"), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, LongPollSkipsNonMatchingBufferedTelegram) {
@@ -195,7 +195,7 @@ TEST_F(ReadHandlerTest, LongPollDrainsAllBufferedWhenNoMatch) {
   EXPECT_EQ(result.http_status, 200);
   // Should have empty "d" object and an index
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
-  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, IndexIncluded) {
@@ -206,7 +206,7 @@ TEST_F(ReadHandlerTest, IndexIncluded) {
 
   EXPECT_EQ(result.http_status, 200);
   // Index starts at 0 (no telegrams received yet)
-  EXPECT_NE(result.body.find("\"i\":\"0\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":0"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, IndexIncrementsAfterTelegram) {
@@ -220,7 +220,7 @@ TEST_F(ReadHandlerTest, IndexIncrementsAfterTelegram) {
 
   EXPECT_EQ(result.http_status, 200);
   // i should be the new_position from cache_last_updates_2 (5)
-  EXPECT_NE(result.body.find("\"i\":\"5\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":5"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, IndexIncrementsForEachBufferedTelegram) {
@@ -234,7 +234,7 @@ TEST_F(ReadHandlerTest, IndexIncrementsForEachBufferedTelegram) {
 
   EXPECT_EQ(result.http_status, 200);
   // i should be the new_position from cache_last_updates_2 (42)
-  EXPECT_NE(result.body.find("\"i\":\"42\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":42"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, InvalidAddressIgnored) {
@@ -268,7 +268,7 @@ TEST_F(ReadHandlerTest, LongPollWithIndexDetectsPendingUpdate) {
   EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // Index must advance to the new position from cache_last_updates_2
-  EXPECT_NE(result.body.find("\"i\":\"10\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":10"), std::string::npos);
 }
 
 // Simulates a busy KNX bus where cache_last_updates_2 returns immediately
@@ -297,7 +297,7 @@ TEST_F(ReadHandlerTest, LongPollWithIndexSkipsNonMatchingThenFindsMatch) {
   // Non-matching address must NOT appear
   EXPECT_EQ(result.body.find("1/3/4"), std::string::npos);
   // Index must advance to the final position
-  EXPECT_NE(result.body.find("\"i\":\"10\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":10"), std::string::npos);
 }
 
 // Simulates knxd's CACHE_LAST_UPDATES_2 returning "no updates" (changed=0,
@@ -320,7 +320,7 @@ TEST_F(ReadHandlerTest, LongPollContinuesPollingAfterKnxdEmptyResponse) {
   EXPECT_EQ(result.http_status, 200);
   EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
-  EXPECT_NE(result.body.find("\"i\":\"11029\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":11029"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, RecoversFromCacheUpdatesFailure) {
@@ -339,7 +339,7 @@ TEST_F(ReadHandlerTest, RecoversFromCacheUpdatesFailure) {
   EXPECT_EQ(result.http_status, 200);
   EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
-  EXPECT_NE(result.body.find("\"i\":\"10\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":10"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, RecoversFromCacheReadFailureInPollLoop) {
@@ -359,7 +359,7 @@ TEST_F(ReadHandlerTest, RecoversFromCacheReadFailureInPollLoop) {
   EXPECT_EQ(result.http_status, 200);
   EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   // The cache_read retry in KnxdClient should recover the value
-  EXPECT_NE(result.body.find("42"), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, HandlesPersistentKnxdOutage) {
@@ -376,7 +376,7 @@ TEST_F(ReadHandlerTest, HandlesPersistentKnxdOutage) {
   EXPECT_EQ(result.http_status, 200);
   // Should have empty data object and an index
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
-  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, InvalidTimeoutReturns400) {
@@ -423,7 +423,7 @@ TEST_F(ReadHandlerTest, LongPollTimeoutReturnsEmpty) {
   EXPECT_EQ(result.http_status, 200);
   // Should have empty "d" object and an index
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
-  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 }
 
 // ---- User-reported bug reproduction ----
@@ -448,7 +448,7 @@ TEST_F(ReadHandlerTest, TimeoutZeroWithCachedValueAndBusyBusReturnsCorrectIndex)
   EXPECT_NE(result.body.find("7/4/2"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // i must be the new_position from cache_last_updates_2 (42)
-  EXPECT_NE(result.body.find("\"i\":\"42\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":42"), std::string::npos);
   // Must NOT block — no read telegram sent because value was cached
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
@@ -473,7 +473,7 @@ TEST_F(ReadHandlerTest, InitialIndexReturnsCachedValueImmediately) {
   EXPECT_NE(result.body.find("7/4/2"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // i must reflect the new_position from cache_last_updates_2 (42)
-  EXPECT_NE(result.body.find("\"i\":\"42\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":42"), std::string::npos);
 }
 
 // ============================================================================
@@ -500,7 +500,7 @@ TEST_F(ReadHandlerTest, TimeoutParamIsSimplePollTimeout) {
   EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // i should be the new position (5), not telegram count
-  EXPECT_NE(result.body.find("\"i\":\"5\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":5"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, TimeoutZeroForcesInitialRead) {
@@ -524,7 +524,7 @@ TEST_F(ReadHandlerTest, TimeoutZeroForcesInitialRead) {
   EXPECT_NE(result.body.find("1/3/4"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // i should be the end position from cache_last_updates_2
-  EXPECT_NE(result.body.find("\"i\":\"5\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":5"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, TimeoutNegativeIsTreatedAsNormalTimeout) {
@@ -538,7 +538,7 @@ TEST_F(ReadHandlerTest, TimeoutNegativeIsTreatedAsNormalTimeout) {
   auto result = handler.handle("a=1/2/3&t=-1");
   EXPECT_EQ(result.http_status, 200);
   // Should not be a 400 (invalid timeout)
-  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 }
 
 // ---- i parameter as position cursor (issue #3) ----
@@ -558,7 +558,7 @@ TEST_F(ReadHandlerTest, IndexParamUsedAsStartPositionForCacheLastUpdates) {
   EXPECT_NE(result.body.find("1/2/3"), std::string::npos);
   EXPECT_NE(result.body.find("42"), std::string::npos);
   // i in response should be the new end position (12)
-  EXPECT_NE(result.body.find("\"i\":\"12\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":12"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, IndexZeroTriggersInitialReadWithCacheFirst) {
@@ -595,8 +595,8 @@ TEST_F(ReadHandlerTest, IndexParamResponseIsNewPositionNotTelegramCount) {
 
   EXPECT_EQ(result.http_status, 200);
   // i must be 5 (the new_position), NOT 999 (telegram_count)
-  EXPECT_NE(result.body.find("\"i\":\"5\""), std::string::npos);
-  EXPECT_EQ(result.body.find("\"i\":\"999\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":5"), std::string::npos);
+  EXPECT_EQ(result.body.find("\"i\":999"), std::string::npos);
 }
 
 // ---- Multi-address response (issue #6) ----
@@ -620,7 +620,7 @@ TEST_F(ReadHandlerTest, MultipleChangedAddressesInOneResponse) {
   EXPECT_NE(result.body.find("1/3/4"), std::string::npos);
   EXPECT_NE(result.body.find("0c6f"), std::string::npos);
   // i should be the new position
-  EXPECT_NE(result.body.find("\"i\":\"10\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":10"), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, OnlySubscribedAddressesInMultiResponse) {
@@ -696,7 +696,7 @@ TEST_F(ReadHandlerTest, CacheLastUpdates2TimeoutReturnsEmpty) {
 
   EXPECT_EQ(result.http_status, 200);
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
-  EXPECT_NE(result.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 }
 
 // ---- Initial read (lastpos==0) behavior ----

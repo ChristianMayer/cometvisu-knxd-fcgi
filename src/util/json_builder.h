@@ -35,6 +35,9 @@ public:
   /// Add a string key-value pair: "key":"value"
   void add_string(std::string_view key, std::string_view value);
 
+  /// Add a number key-value pair: "key":number (no quotes around value).
+  void add_number(std::string_view key, int64_t value);
+
   /// Add a nested object as a value.
   /// Caller is responsible for calling start/end_object before/after.
   void add_key(std::string_view key);

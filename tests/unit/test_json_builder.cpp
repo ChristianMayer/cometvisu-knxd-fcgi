@@ -41,9 +41,9 @@ TEST(JsonBuilderTest, NestedObject) {
   jb.add_string("KNX:1/2/3", "0c6f");
   jb.add_string("KNX:4/5/6", "42");
   jb.end_object();
-  jb.add_string("i", "1");
+  jb.add_number("i", 1);
   jb.end_object();
-  EXPECT_EQ(jb.str(), R"({"d":{"KNX:1/2/3":"0c6f","KNX:4/5/6":"42"},"i":"1"})");
+  EXPECT_EQ(jb.str(), R"({"d":{"KNX:1/2/3":"0c6f","KNX:4/5/6":"42"},"i":1})");
 }
 
 TEST(JsonBuilderTest, SpecialCharsEscaped) {

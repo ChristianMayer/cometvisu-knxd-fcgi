@@ -65,7 +65,7 @@ TEST_F(FullFlowTest, WriteThenRead) {
   ReadHandler read_handler(knxd_, sessions_);
 
   // Step 1: Write a value
-  auto write_result = write_handler.handle("a=KNX:1/2/3&v=0c6f");
+  auto write_result = write_handler.handle("a=KNX:1/2/3&v=800c6f");
   EXPECT_EQ(write_result.http_status, 200);
 
   // Step 2: Pre-populate mock knxd cache (simulating knxd's auto-caching)
@@ -113,7 +113,7 @@ TEST_F(FullFlowTest, RouterWriteRoute) {
   FcgiRequest req;
   req.request_method = "GET";
   req.path_info = "/w";
-  req.query_string = "a=KNX:1/2/3&v=42";
+  req.query_string = "a=KNX:1/2/3&v=8042";
 
   auto resp = router.route(req);
   EXPECT_EQ(resp.status_code, 200);

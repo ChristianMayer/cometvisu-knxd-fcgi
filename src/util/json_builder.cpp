@@ -81,6 +81,14 @@ void JsonBuilder::add_string(std::string_view key, std::string_view value) {
   first_ = false;
 }
 
+void JsonBuilder::add_number(std::string_view key, int64_t value) {
+  add_comma();
+  add_quoted(key);
+  buffer_.push_back(':');
+  buffer_.append(std::to_string(value));
+  first_ = false;
+}
+
 void JsonBuilder::add_key(std::string_view key) {
   add_comma();
   add_quoted(key);

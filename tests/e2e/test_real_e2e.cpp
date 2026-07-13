@@ -146,17 +146,18 @@ TEST_F(RealKnxdE2ETest, InitialReadTimedPollReturnsEmpty) {
 
 TEST_F(RealKnxdE2ETest, WriteSingleByte) {
   Router router(knxd_, sessions_);
-  EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(1) + "&v=42")).status_code, 200);
+  EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(1) + "&v=8042")).status_code, 200);
 }
 
 TEST_F(RealKnxdE2ETest, WriteMultiByte) {
   Router router(knxd_, sessions_);
-  EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(2) + "&v=0c6f")).status_code, 200);
+  EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(2) + "&v=800c6f")).status_code, 200);
 }
 
 TEST_F(RealKnxdE2ETest, WriteMultipleAddresses) {
   Router router(knxd_, sessions_);
-  EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(3) + "&a=" + a(4) + "&v=01")).status_code, 200);
+  EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(3) + "&a=" + a(4) + "&v=8001")).status_code,
+            200);
 }
 
 // ---- Read with timeout — returns 200 (empty on virtual bus) ----
@@ -240,7 +241,7 @@ TEST_F(RealKnxdE2ETest, CometLongPollTimeoutReturnsEmpty) {
 
   EXPECT_EQ(resp.status_code, 200);
   EXPECT_NE(resp.body.find("\"d\":{}"), std::string::npos);
-  EXPECT_NE(resp.body.find("\"i\":\""), std::string::npos);
+  EXPECT_NE(resp.body.find("\"i\":"), std::string::npos);
   EXPECT_GE(elapsed, 1800) << "Should block ~2s, only " << elapsed << "ms";
 }
 
@@ -285,7 +286,7 @@ TEST_F(RealKnxdE2ETest, ValidSessionAllowsWrite) {
   std::string s = sid(lr.body);
   ASSERT_FALSE(s.empty());
 
-  EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(14) + "&v=7e&s=" + s)).status_code, 200);
+  EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(14) + "&v=807e&s=" + s)).status_code, 200);
 }
 
 TEST_F(RealKnxdE2ETest, AnonymousSessionAllowsRead) {

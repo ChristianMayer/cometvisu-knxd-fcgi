@@ -250,7 +250,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
   }
 
   json.end_object();  // d
-  json.add_string("i", std::to_string(lastpos));
+  json.add_number("i", static_cast<int64_t>(lastpos));
   json.end_object();  // root
 
   result.body = json.take();
