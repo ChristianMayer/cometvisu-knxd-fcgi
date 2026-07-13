@@ -66,10 +66,9 @@ TEST_F(ReadHandlerTest, ReadFromKnxdCacheTimeoutZero) {
 }
 
 TEST_F(ReadHandlerTest, TimeoutZeroCacheMissSendsReadTelegram) {
-  // With the corrected semantics, t=0 forces an initial cache read (lastpos=0).
-  // If a value is not in cache, no read telegram is sent — this is different
-  // from the old behavior. The handler relies on cache_last_updates_2 for
-  // position-based polling, not on sending read telegrams.
+  // When t=0 forces an initial read (lastpos=0) and a requested address is not
+  // in the knxd cache, a GroupValueRead telegram must be sent to query the
+  // device's current value. This matches the original eibread-cgi.c behavior.
   ReadHandler handler(knxd_, sessions_);
 
   // No cached value for 1/2/3
@@ -82,10 +81,11 @@ TEST_F(ReadHandlerTest, TimeoutZeroCacheMissSendsReadTelegram) {
   // Should have empty "d" object and an index (immediate response)
   EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
   EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
-  // With the new semantics (matching original eibread-cgi.c), t=0 does NOT
-  // send read telegrams — it forces a cache re-read and poll loop.
-  // The poll loop uses cache_last_updates_2, not send_group_packet.
-  EXPECT_TRUE(knxd_.sent_packets().empty());
+
+  // A GroupValueRead telegram must have been sent for the cache miss
+  ASSERT_EQ(knxd_.sent_packets().size(), 1);
+  EXPECT_EQ(knxd_.sent_packets()[0].group_addr, 0x0A03);  // 1/2/3
+  EXPECT_EQ(knxd_.sent_packets()[0].apdu, build_apdu(ApduType::Read, {}));
 }
 
 TEST_F(ReadHandlerTest, TimeoutZeroMixedCacheAndUncached) {
@@ -108,9 +108,10 @@ TEST_F(ReadHandlerTest, TimeoutZeroMixedCacheAndUncached) {
   // Index must be included
   EXPECT_NE(result.body.find("\"i\":"), std::string::npos);
 
-  // With corrected semantics, t=0 does NOT send read telegrams.
-  // The handler relies on cache_last_updates_2 for change detection.
-  EXPECT_TRUE(knxd_.sent_packets().empty());
+  // Only 1/3/4 (0x0B04) had a cache miss → one read telegram for it
+  ASSERT_EQ(knxd_.sent_packets().size(), 1);
+  EXPECT_EQ(knxd_.sent_packets()[0].group_addr, 0x0B04);  // 1/3/4
+  EXPECT_EQ(knxd_.sent_packets()[0].apdu, build_apdu(ApduType::Read, {}));
 }
 
 TEST_F(ReadHandlerTest, NegativeTimeoutCacheMiss) {

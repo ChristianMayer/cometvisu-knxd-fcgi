@@ -87,3 +87,28 @@ TEST(JsonBuilderTest, RawInsert) {
   jb.end_object();
   EXPECT_EQ(jb.str(), R"({"prebuilt":{"x":1},"extra":"val"})");
 }
+
+TEST(JsonBuilderTest, AddNumber) {
+  JsonBuilder jb;
+  jb.start_object();
+  jb.add_number("i", 0);
+  jb.end_object();
+  EXPECT_EQ(jb.str(), R"({"i":0})");
+}
+
+TEST(JsonBuilderTest, AddNumberNegative) {
+  JsonBuilder jb;
+  jb.start_object();
+  jb.add_number("x", -42);
+  jb.end_object();
+  EXPECT_EQ(jb.str(), R"({"x":-42})");
+}
+
+TEST(JsonBuilderTest, AddNumberWithString) {
+  JsonBuilder jb;
+  jb.start_object();
+  jb.add_string("v", "0.0.2");
+  jb.add_number("i", 7);
+  jb.end_object();
+  EXPECT_EQ(jb.str(), R"({"v":"0.0.2","i":7})");
+}
