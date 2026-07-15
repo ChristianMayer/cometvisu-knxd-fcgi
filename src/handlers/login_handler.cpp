@@ -15,15 +15,14 @@
 
 #include "login_handler.h"
 
-#include <cstdlib>
-
 #include "state/session_store.h"
 #include "util/json_builder.h"
 #include "util/query_string.h"
 
 namespace cvknxd {
 
-LoginHandler::LoginHandler(SessionStore& sessions) : sessions_(sessions) {}
+LoginHandler::LoginHandler(SessionStore& sessions, std::string base_url)
+    : sessions_(sessions), base_url_(std::move(base_url)) {}
 
 std::string LoginHandler::handle(std::string_view query_string) {
   QueryString params{query_string};
@@ -39,11 +38,10 @@ std::string LoginHandler::handle(std::string_view query_string) {
   json.add_string("s", session_id);
 
   // Include configuration block when BASE_URL is set
-  const char* url_path = std::getenv("BASE_URL");
-  if (url_path != nullptr && url_path[0] != '\0') {
+  if (!base_url_.empty()) {
     json.add_key("c");
     json.start_object();
-    json.add_string("baseURL", url_path);
+    json.add_string("baseURL", base_url_);
     json.end_object();
   }
 

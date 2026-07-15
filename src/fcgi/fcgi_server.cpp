@@ -27,8 +27,9 @@
 
 #include "../util/debug_log.h"
 
-// POSIX environment pointer — needed for direct socket mode to make
-// request parameters available via getenv() after FCGX_Accept_r().
+// POSIX environment pointer — used by the no-arg read_request() overload
+// via getenv().  The direct-socket and multithreaded paths pass the
+// FCGX_Request::envp array directly instead, avoiding races on environ.
 extern char** environ;
 
 namespace cvknxd {
@@ -96,10 +97,10 @@ int FcgiServer::run() {
     }
 
     while (FCGX_Accept_r(&request_) >= 0) {
-      // Make environment variables accessible via getenv() for read_request()
-      environ = request_.envp;
-
-      FcgiRequest req = read_request();
+      // Read request parameters directly from the FCGI envp array.
+      // This avoids setting the global environ pointer, making it safe
+      // for use in both single-threaded and multithreaded contexts.
+      FcgiRequest req = read_request(request_.envp);
       DebugLog::http_request(req.request_method, req.request_uri);
 
       FcgiResponse resp = handler_(req);
@@ -210,18 +211,24 @@ int FcgiServer::run_multithreaded(int num_threads) {
           break;
         }
 
-        // Make environment variables accessible via getenv() for read_request()
-        environ = request.envp;
-
-        FcgiRequest req = read_request();
+        // Read request parameters directly from the FCGI envp array.
+        // This avoids setting the global environ pointer, which would
+        // race with other worker threads doing the same concurrently.
+        FcgiRequest req = read_request(request.envp);
         DebugLog::http_request(req.request_method, req.request_uri);
 
         FcgiResponse resp = handler_(req);
         DebugLog::http_response(resp.status_code, resp.body);
 
-        write_response_direct(request, resp);
-
-        FCGX_Finish_r(&request);
+        // Serialize FCGI output calls with a mutex.  libfcgi's internal
+        // stream and connection state is not fully thread-safe, so
+        // concurrent FCGX_PutStr / FCGX_Finish_r calls from different
+        // worker threads can corrupt shared buffers.
+        {
+          std::lock_guard<std::mutex> lock(fcgi_mutex_);
+          write_response_direct(request, resp);
+          FCGX_Finish_r(&request);
+        }
       }
     });
   }
@@ -295,6 +302,71 @@ FcgiRequest FcgiServer::read_request() {
         total += static_cast<size_t>(n);
       }
       // Shrink to actual bytes read (in case of early EOF)
+      req.content.resize(total);
+    }
+  }
+
+  return req;
+}
+
+FcgiRequest FcgiServer::read_request(char** envp) {
+  FcgiRequest req;
+
+  if (envp == nullptr) {
+    return req;
+  }
+
+  // Helper: find a value by name in a null-terminated envp array.
+  // Each entry is "KEY=VALUE". Returns pointer to VALUE part, or nullptr.
+  auto get_env = [](char** envp, const char* name) -> const char* {
+    if (envp == nullptr || name == nullptr)
+      return nullptr;
+    size_t name_len = std::strlen(name);
+    for (char** e = envp; *e != nullptr; ++e) {
+      if (std::strncmp(*e, name, name_len) == 0 && (*e)[name_len] == '=') {
+        return *e + name_len + 1;
+      }
+    }
+    return nullptr;
+  };
+
+  auto get_env_or_empty = [&](const char* name) -> const char* {
+    const char* val = get_env(envp, name);
+    return val ? val : "";
+  };
+
+  req.request_method = get_env_or_empty("REQUEST_METHOD");
+  req.request_uri = get_env_or_empty("REQUEST_URI");
+  req.query_string = get_env_or_empty("QUERY_STRING");
+  req.content_type = get_env_or_empty("CONTENT_TYPE");
+  req.script_name = get_env_or_empty("SCRIPT_NAME");
+  req.path_info = get_env_or_empty("PATH_INFO");
+  req.server_protocol = get_env_or_empty("SERVER_PROTOCOL");
+
+  // Read request body (for POST data, e.g., filter operations)
+  if (req.request_method == "POST" || req.request_method == "PUT") {
+    const char* content_length_str = get_env(envp, "CONTENT_LENGTH");
+    if (content_length_str != nullptr && content_length_str[0] != '\0') {
+      int content_length = 0;
+      auto [ptr, ec] = std::from_chars(
+          content_length_str, content_length_str + std::strlen(content_length_str), content_length);
+      if (ec != std::errc{} || content_length <= 0) {
+        return req;
+      }
+      if (content_length > kMaxContentLength) {
+        std::cerr << "[WARN] CONTENT_LENGTH " << content_length << " exceeds maximum "
+                  << kMaxContentLength << ", truncating\n";
+        content_length = kMaxContentLength;
+      }
+      req.content.resize(static_cast<size_t>(content_length));
+      size_t total = 0;
+      while (total < static_cast<size_t>(content_length)) {
+        int n = FCGI_fread(req.content.data() + total, 1,
+                           static_cast<int>(req.content.size() - total), stdin);
+        if (n <= 0)
+          break;
+        total += static_cast<size_t>(n);
+      }
       req.content.resize(total);
     }
   }

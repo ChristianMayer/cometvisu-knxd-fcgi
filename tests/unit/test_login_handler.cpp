@@ -115,21 +115,16 @@ TEST(LoginHandlerTest, DifferentSessionsAreUnique) {
 }
 
 TEST(LoginHandlerTest, ConfigBlockAbsentWhenNoUrlPath) {
-  // Ensure BASE_URL is not set
-  ScopedEnvVar clear("BASE_URL", nullptr);
-
   SessionStore sessions;
-  LoginHandler handler(sessions);
+  LoginHandler handler(sessions);  // default base_url = ""
 
   std::string response = handler.handle("");
   EXPECT_EQ(response.find("\"c\""), std::string::npos);
 }
 
 TEST(LoginHandlerTest, ConfigBlockPresentWhenUrlPathSet) {
-  ScopedEnvVar set("BASE_URL", "/proxy/visu");
-
   SessionStore sessions;
-  LoginHandler handler(sessions);
+  LoginHandler handler(sessions, "/proxy/visu");
 
   std::string response = handler.handle("");
   EXPECT_NE(response.find("\"c\""), std::string::npos);
@@ -138,21 +133,56 @@ TEST(LoginHandlerTest, ConfigBlockPresentWhenUrlPathSet) {
 }
 
 TEST(LoginHandlerTest, ConfigBlockWithCustomUrlPath) {
-  ScopedEnvVar set("BASE_URL", "/custom/prefix");
-
   SessionStore sessions;
-  LoginHandler handler(sessions);
+  LoginHandler handler(sessions, "/custom/prefix");
 
   std::string response = handler.handle("");
   EXPECT_NE(response.find("\"baseURL\":\"/custom/prefix\""), std::string::npos);
 }
 
 TEST(LoginHandlerTest, ConfigBlockIgnoredWhenUrlPathEmpty) {
-  ScopedEnvVar set("BASE_URL", "");
-
   SessionStore sessions;
-  LoginHandler handler(sessions);
+  LoginHandler handler(sessions, "");
 
   std::string response = handler.handle("");
   EXPECT_EQ(response.find("\"c\""), std::string::npos);
+}
+
+// ============================================================================
+// Regression test: BASE_URL from process environment must NOT be read.
+//
+// The original bug: LoginHandler used std::getenv("BASE_URL") at request time.
+// In fork-based FCGI mode, FCGX_Accept_r() replaces environ with FCGI_PARAMS,
+// which may not include BASE_URL.  Result: the "c" / "baseURL" config block
+// silently disappeared from the login response even though the variable was
+// correctly set in the process environment.
+//
+// The fix: inject base_url via the constructor at startup (before any FCGI
+// accept), so the handler is decoupled from the run-time environ pointer.
+// ============================================================================
+
+TEST(LoginHandlerTest, ConfigBlockNotReadFromEnvironment) {
+  // BASE_URL is set in the process environment ...
+  ScopedEnvVar set("BASE_URL", "/proxy/visu");
+
+  // ... but NOT injected via constructor (simulating FCGI environ swap).
+  SessionStore sessions;
+  LoginHandler handler(sessions);  // default base_url = ""
+
+  // The "c" block must NOT appear — handler must NOT read getenv().
+  std::string response = handler.handle("");
+  EXPECT_EQ(response.find("\"c\""), std::string::npos);
+}
+
+TEST(LoginHandlerTest, ConfigBlockRequiresExplicitInjectionNotEnvVar) {
+  // Even with BASE_URL in the environment ...
+  ScopedEnvVar set("BASE_URL", "/secret/prefix");
+
+  // ... only the constructor parameter controls the output.
+  SessionStore sessions;
+  LoginHandler handler(sessions, "/explicit/prefix");
+
+  std::string response = handler.handle("");
+  EXPECT_NE(response.find("\"baseURL\":\"/explicit/prefix\""), std::string::npos);
+  EXPECT_EQ(response.find("/secret/prefix"), std::string::npos);
 }

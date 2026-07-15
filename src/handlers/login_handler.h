@@ -25,7 +25,10 @@ class SessionStore;
 /// Handles CometVisu login requests: GET /l?u=USER&p=PASSWORD&d=DEVICE
 class LoginHandler {
 public:
-  explicit LoginHandler(SessionStore& sessions);
+  /// @param sessions   Session store
+  /// @param base_url   Base URL prefix advertised in login response "c" block
+  ///                   (e.g. "/proxy/visu"). Empty = omit "c" block entirely.
+  explicit LoginHandler(SessionStore& sessions, std::string base_url = "");
 
   /// Process a login request.
   /// @param query_string Raw QUERY_STRING from FCGI.
@@ -34,6 +37,7 @@ public:
 
 private:
   SessionStore& sessions_;
+  std::string base_url_;
 };
 
 }  // namespace cvknxd

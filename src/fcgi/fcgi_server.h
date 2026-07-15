@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -101,10 +102,19 @@ private:
   FCGX_Request request_{};
   std::atomic<bool> shutdown_requested_{false};
   std::vector<std::thread> workers_;
-  int num_workers_ = 0;  // set by run_multithreaded(), used by shutdown()
+  int num_workers_ = 0;    // set by run_multithreaded(), used by shutdown()
+  std::mutex fcgi_mutex_;  // serializes libfcgi calls in multithreaded mode
 
   /// Read all FCGI parameters from stdin into an FcgiRequest.
+  /// Uses getenv() which reads from the global environ pointer.
   [[nodiscard]] static FcgiRequest read_request();
+
+  /// Read FCGI parameters from an explicit FCGI parameter array into an
+  /// FcgiRequest.  Thread-safe: uses the passed envp directly instead of
+  /// the global environ pointer, avoiding races when multiple threads
+  /// would overwrite environ concurrently.
+  /// @param envp  FCGI parameter array (FCGX_Request::envp).
+  [[nodiscard]] static FcgiRequest read_request(char** envp);
   /// Write an FcgiResponse to the appropriate output stream.
   /// Uses FCGX_Request::out when in direct socket mode, FCGI stdout otherwise.
   void write_response(const FcgiResponse& response);

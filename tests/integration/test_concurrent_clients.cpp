@@ -458,3 +458,201 @@ TEST_F(ConcurrentClientsTest, MultipleClientsProcessedConcurrently) {
     EXPECT_EQ(result, 0) << "server.run_multithreaded() returned error";
   }
 }
+
+// ============================================================================
+// TDD regression test 1: environ race between worker threads.
+//
+// The original bug: all worker threads set the global `environ` pointer
+// (environ = request.envp), then read_request() called getenv() which
+// reads from environ.  Thread A could accept client A, but before reading
+// its parameters, Thread B accepted client B and overwrote environ.
+// Thread A then read Thread B's parameters — silent data corruption.
+//
+// This test sends DIFFERENT query parameters to each client and verifies
+// each client receives its OWN parameters back in the response.  Without
+// the fix (read_request(char** envp) reading directly from the FCGI
+// envp array), this test fails intermittently with wrong parameters.
+// ============================================================================
+
+TEST_F(ConcurrentClientsTest, EnvironmentParamsNotSharedAcrossThreads) {
+  constexpr int kNumClients = 5;
+  constexpr int kNumThreads = 5;
+
+  FcgiServer server;
+  ASSERT_TRUE(server.listen(socket_path_));
+  ASSERT_TRUE(server.is_listening());
+
+  // Handler echoes back the "client=N" parameter from the query string.
+  // Each client sends a UNIQUE client number, and expects to see it in
+  // the response body.  If environ is shared/raced across threads, some
+  // clients will get the wrong client number back.
+  server.set_handler([&](const FcgiRequest& req) -> FcgiResponse {
+    std::string qs = req.query_string;
+    auto pos = qs.find("client=");
+    std::string client_id = (pos != std::string::npos) ? std::string(qs.substr(pos + 7, 2)) : "?";
+    // Strip possible trailing "&" or end-of-string
+    auto end = client_id.find('&');
+    if (end != std::string::npos)
+      client_id.resize(end);
+
+    // Simulate some work to create overlap between threads
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    FcgiResponse resp;
+    resp.status_code = 200;
+    resp.body = "{\"client\":\"" + client_id + "\"}";
+    return resp;
+  });
+
+  std::promise<int> server_promise;
+  auto server_future = server_promise.get_future();
+  std::atomic<bool> server_ready{false};
+  std::thread server_thread([&]() {
+    server_ready.store(true);
+    int result = server.run_multithreaded(kNumThreads);
+    server_promise.set_value(result);
+  });
+
+  while (!server_ready.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  std::vector<std::thread> client_threads;
+  std::vector<std::string> results(kNumClients);
+  std::vector<bool> success(kNumClients, false);
+
+  for (int i = 0; i < kNumClients; ++i) {
+    client_threads.emplace_back([&, i, this]() {
+      FcgiTestClient client;
+      if (!client.connect(socket_path_))
+        return;
+      std::string qs = "a=KNX:1/2/3&client=" + std::to_string(i);
+      if (!client.send_get_request(static_cast<uint16_t>(i + 1), qs, "/r"))
+        return;
+      results[i] = client.read_response(static_cast<uint16_t>(i + 1));
+      success[i] = !results[i].empty();
+    });
+  }
+
+  for (auto& t : client_threads)
+    t.join();
+
+  // EVERY client must get its OWN client number back
+  for (int i = 0; i < kNumClients; ++i) {
+    ASSERT_TRUE(success[i]) << "Client " << i << " failed to get response";
+    std::string expected = "\"client\":\"" + std::to_string(i) + "\"";
+    EXPECT_NE(results[i].find(expected), std::string::npos)
+        << "Client " << i << " got wrong or missing client ID. "
+        << "Expected \"" << expected << "\" but got: " << results[i];
+  }
+
+  server.shutdown();
+  auto status = server_future.wait_for(std::chrono::seconds(15));
+  if (status == std::future_status::timeout) {
+    server_thread.detach();
+    FAIL() << "Server thread did not exit within 15 seconds after shutdown()";
+  } else {
+    server_thread.join();
+    EXPECT_EQ(server_future.get(), 0);
+  }
+}
+
+// ============================================================================
+// TDD regression test 2: libfcgi thread-safety under high concurrency.
+//
+// libfcgi's internal stream and connection state is not fully thread-safe.
+// Concurrent FCGX_PutStr / FCGX_Finish_r calls from different worker
+// threads can corrupt shared internal buffers, causing some clients to
+// never receive a response.
+//
+// This test sends 10 concurrent clients (well above the 4-thread pool)
+// and asserts ALL receive valid responses.  Without the mutex protecting
+// FCGI output calls in run_multithreaded(), this test fails frequently.
+// ============================================================================
+
+TEST_F(ConcurrentClientsTest, ManyConcurrentClientsStressTest) {
+  constexpr int kNumClients = 10;
+  constexpr int kNumThreads = 4;
+
+  std::atomic<int> response_count{0};
+
+  FcgiServer server;
+  ASSERT_TRUE(server.listen(socket_path_));
+  ASSERT_TRUE(server.is_listening());
+
+  server.set_handler([&]([[maybe_unused]] const FcgiRequest& req) -> FcgiResponse {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    response_count.fetch_add(1);
+    FcgiResponse resp;
+    resp.status_code = 200;
+    resp.body = "{\"status\":\"ok\"}";
+    return resp;
+  });
+
+  std::promise<int> server_promise;
+  auto server_future = server_promise.get_future();
+  std::atomic<bool> server_ready{false};
+  std::thread server_thread([&]() {
+    server_ready.store(true);
+    int result = server.run_multithreaded(kNumThreads);
+    server_promise.set_value(result);
+  });
+
+  while (!server_ready.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  std::vector<std::thread> client_threads;
+  std::vector<std::string> results(kNumClients);
+  std::vector<bool> success(kNumClients, false);
+
+  for (int i = 0; i < kNumClients; ++i) {
+    client_threads.emplace_back([&, i, this]() {
+      FcgiTestClient client;
+      if (!client.connect(socket_path_))
+        return;
+      std::string qs = "a=KNX:1/2/3&client=" + std::to_string(i);
+      if (!client.send_get_request(static_cast<uint16_t>(i + 1), qs, "/r"))
+        return;
+      results[i] = client.read_response(static_cast<uint16_t>(i + 1));
+      success[i] = !results[i].empty();
+    });
+  }
+
+  for (auto& t : client_threads)
+    t.join();
+
+  // ALL 10 clients must get responses
+  int fail_count = 0;
+  for (int i = 0; i < kNumClients; ++i) {
+    if (!success[i]) {
+      ++fail_count;
+    }
+  }
+  EXPECT_EQ(fail_count, 0) << fail_count << " out of " << kNumClients
+                           << " clients failed to get responses";
+
+  // All responses should be valid
+  for (int i = 0; i < kNumClients; ++i) {
+    if (success[i]) {
+      EXPECT_NE(results[i].find("{\"status\":\"ok\"}"), std::string::npos)
+          << "Client " << i << " got unexpected response: " << results[i];
+    }
+  }
+
+  // Server should have processed all requests
+  EXPECT_EQ(response_count.load(), kNumClients)
+      << "Expected " << kNumClients << " handler invocations, got " << response_count.load();
+
+  server.shutdown();
+  auto status = server_future.wait_for(std::chrono::seconds(15));
+  if (status == std::future_status::timeout) {
+    server_thread.detach();
+    FAIL() << "Server thread did not exit within 15 seconds after shutdown()";
+  } else {
+    server_thread.join();
+    EXPECT_EQ(server_future.get(), 0);
+  }
+}

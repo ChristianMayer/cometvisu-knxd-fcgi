@@ -188,7 +188,11 @@ int main(int argc, char* argv[]) {
 
   // ---- Create router ----
   // No local cache — we delegate to knxd's built-in cache via cache_read().
-  Router router(knxd, sessions, longpoll_timeout);
+  // base_url is captured from the process environment at startup (not via
+  // getenv() at request time), because after FCGX_Accept_r() the environ
+  // pointer is replaced with the FCGI parameter environment which may not
+  // include BASE_URL.
+  Router router(knxd, sessions, longpoll_timeout, base_url != nullptr ? base_url : "");
 
   // Register the request handler on the FCGI server
   server.set_handler([&](const FcgiRequest& req) -> FcgiResponse { return router.route(req); });

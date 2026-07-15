@@ -26,7 +26,8 @@ namespace cvknxd {
 /// URL router: dispatches FCGI requests to the appropriate handler.
 class Router {
 public:
-  Router(KnxdClientInterface& knxd, SessionStore& sessions, int longpoll_timeout_sec = 300);
+  Router(KnxdClientInterface& knxd, SessionStore& sessions, int longpoll_timeout_sec = 300,
+         std::string base_url = "");
 
   /// Dispatch a request and return the response.
   [[nodiscard]] FcgiResponse route(const FcgiRequest& request);
