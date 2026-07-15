@@ -79,3 +79,9 @@ add_executable(test_knxd_connector
 )
 target_link_libraries(test_knxd_connector PRIVATE cvknxd_knxd cvknxd_mocks GTest::gtest GTest::gtest_main)
 add_test(NAME test_knxd_connector COMMAND test_knxd_connector)
+
+add_executable(test_sigpipe
+    test_sigpipe.cpp
+)
+target_link_libraries(test_sigpipe PRIVATE GTest::gtest GTest::gtest_main)
+add_test(NAME test_sigpipe COMMAND test_sigpipe)

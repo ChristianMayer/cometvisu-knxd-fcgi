@@ -108,6 +108,14 @@ int main(int argc, char* argv[]) {
   // are printed to stderr for troubleshooting.
   DebugLog::init_from_env();
 
+  // ---- Signal handling ----
+  // Ignore SIGPIPE so that write() on a closed socket returns EPIPE instead
+  // of killing the process. This is essential in the fork-based worker pool
+  // where knxd may close connections asynchronously. The write_all() error
+  // handling already copes with EPIPE correctly — it just needs the process
+  // to stay alive to handle it.
+  ::signal(SIGPIPE, SIG_IGN);
+
   // ---- Configuration ----
   // Environment variables are inherited from the FCGI-spawning web server.
   // This is safe because:
@@ -270,6 +278,12 @@ int main(int argc, char* argv[]) {
       worker_pids.push_back(pid);
       std::cout << "[INFO] Started worker " << i << "/" << num_workers << " pid=" << pid << "\n";
     }
+
+    // ---- Parent: close inherited knxd connection ----
+    // The parent process does not handle FCGI requests — it only waits for
+    // children to exit.  Close the knxd connection now so we don't waste a
+    // connection slot and don't interfere with the children's connections.
+    knxd.disconnect();
 
     if (fork_failed) {
       // Kill all successfully started children
