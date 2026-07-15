@@ -15,6 +15,7 @@
 
 #include <fcgiapp.h>
 #include <gtest/gtest.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -279,14 +280,38 @@ TEST_F(ForkWorkerTest, ForkFailureIsReported) {
 
   ASSERT_TRUE(server.listen(socket_path_));
 
-  // Fork with an impossibly large count to trigger resource exhaustion.
-  // The function should fail gracefully and return fewer children
-  // (or none if fork failed on the first attempt).
-  auto children = fork_workers(100000, server, nullptr);
+  // Temporarily lower the process limit (RLIMIT_NPROC) to reliably
+  // trigger fork() failure.  This is more predictable than using a
+  // hard-coded large fork count, which behaves differently depending
+  // on the system's ulimit settings (CI runners vs. local dev).
+  //
+  // We set the soft limit to 50 processes, which is low enough that
+  // fork_workers(100) will always fail, while still allowing the test
+  // process itself plus a few children to exist.
+  struct rlimit old_limit;
+  ASSERT_EQ(::getrlimit(RLIMIT_NPROC, &old_limit), 0)
+      << "getrlimit(RLIMIT_NPROC) failed: " << ::strerror(errno);
 
-  // Verify the function didn't hang or crash. The exact return value
-  // depends on system resources — it should be < 100000.
-  EXPECT_LT(children.size(), static_cast<size_t>(100000))
+  struct rlimit new_limit = old_limit;
+  new_limit.rlim_cur = 50;  // soft limit: allow ~50 processes total
+  if (::setrlimit(RLIMIT_NPROC, &new_limit) != 0) {
+    // If we can't set the limit (e.g., running as non-root without
+    // CAP_SYS_RESOURCE), skip the test rather than risk creating
+    // thousands of child processes.
+    GTEST_SKIP() << "Cannot lower RLIMIT_NPROC to trigger fork failure: " << ::strerror(errno);
+  }
+
+  // Try to fork 100 workers — with a limit of 50 processes this will
+  // fail long before reaching 100.
+  auto children = fork_workers(100, server, nullptr);
+
+  // Restore the original limit before any assertions (so cleanup_children
+  // and subsequent tests see the correct limit).
+  ::setrlimit(RLIMIT_NPROC, &old_limit);
+
+  // Verify the function didn't hang or crash.  With the lowered limit
+  // we expect fork() to fail, producing fewer than 100 children.
+  EXPECT_LT(children.size(), static_cast<size_t>(100))
       << "Resource-exhausting fork should have failed and returned fewer children";
 
   // Clean up any children that were successfully forked before failure

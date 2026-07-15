@@ -379,26 +379,20 @@ void KnxdClient::invalidate_cache() {
 int* KnxdClient::ensure_cache_connection() {
   std::lock_guard<std::recursive_mutex> cache_lock(impl_->cache_mutex);
 
+  // Always close any existing cache connection before opening a new one.
+  // The cache connection is a plain Unix socket without a group socket.
+  // knxd closes such connections after responding (only group-socket
+  // connections are kept alive).  Trying to keep and reuse them results
+  // in a stale-detect-reconnect loop on every cache operation.
   if (impl_->cache_fd_ >= 0) {
-    // Verify the cache connection is still alive (knxd may have restarted).
-    struct pollfd pfd = {};
-    pfd.fd = impl_->cache_fd_;
-    pfd.events = 0;
-    pfd.revents = 0;
-    if (::poll(&pfd, 1, 0) < 0 || (pfd.revents & (POLLHUP | POLLERR)) != 0) {
-      // Connection is dead — close and reconnect below.
-      std::cerr << "[DEBUG] cache_connect: stale cache fd detected, reconnecting" << std::endl;
-      ::close(impl_->cache_fd_);
-      impl_->cache_fd_ = -1;
-      impl_->cache_read_buffer_.clear();
-      {
-        std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
-        while (!impl_->pre_counted_telegrams_.empty())
-          impl_->pre_counted_telegrams_.pop();
-      }
-    } else {
-      return &impl_->cache_fd_;
-    }
+    ::close(impl_->cache_fd_);
+    impl_->cache_fd_ = -1;
+  }
+  impl_->cache_read_buffer_.clear();
+  {
+    std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
+    while (!impl_->pre_counted_telegrams_.empty())
+      impl_->pre_counted_telegrams_.pop();
   }
 
   // Copy socket_path_ under the main mutex to avoid a data race with
@@ -409,19 +403,14 @@ int* KnxdClient::ensure_cache_connection() {
     path = impl_->socket_path_;
   }
 
-  std::cerr << "[DEBUG] cache_connect: opening to " << path << std::endl;
-
   impl_->cache_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (impl_->cache_fd_ < 0) {
-    std::cerr << "[DEBUG] cache_connect: socket() failed: " << strerror(errno) << std::endl;
+  if (impl_->cache_fd_ < 0)
     return nullptr;
-  }
 
   struct sockaddr_un addr;
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
   if (path.size() >= sizeof(addr.sun_path)) {
-    std::cerr << "[DEBUG] cache_connect: path too long" << std::endl;
     ::close(impl_->cache_fd_);
     impl_->cache_fd_ = -1;
     return nullptr;
@@ -429,7 +418,6 @@ int* KnxdClient::ensure_cache_connection() {
   std::memcpy(addr.sun_path, path.data(), path.size());
 
   if (::connect(impl_->cache_fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-    std::cerr << "[DEBUG] cache_connect: connect() failed: " << strerror(errno) << std::endl;
     ::close(impl_->cache_fd_);
     impl_->cache_fd_ = -1;
     return nullptr;
@@ -441,7 +429,6 @@ int* KnxdClient::ensure_cache_connection() {
     ::fcntl(impl_->cache_fd_, F_SETFL, flags | O_NONBLOCK);
   }
 
-  std::cerr << "[DEBUG] cache_connect: connected fd=" << impl_->cache_fd_ << std::endl;
   return &impl_->cache_fd_;
 }
 
@@ -577,10 +564,8 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
   if (result.has_value())
     return result;
 
-  // If the connection was alive but died mid-operation, reconnect and retry.
-  // If we never got past ensure_cache_connection(), also retry (knxd may have
-  // just started up).
-  invalidate_cache();
+  // Retry once — ensure_cache_connection always opens a fresh connection,
+  // so a second attempt may succeed if the first hit a transient error.
   bool second_ok = false;
   return attempt(second_ok);
 }
@@ -791,9 +776,9 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
   if (result.has_value())
     return result;
 
-  // Connection may have been lost — reconnect and retry once.
+  // Retry once — ensure_cache_connection always opens a fresh connection,
+  // so a second attempt may succeed if the first hit a transient error.
   // The deadline is shared, so the retry won't exceed the original time budget.
-  invalidate_cache();
   return attempt();
 }
 
