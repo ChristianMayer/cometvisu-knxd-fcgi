@@ -50,8 +50,23 @@ FCGI_SOCKET=/tmp/cometvisu-fcgi.sock ./build/src/cometvisu-knxd-fcgi
 | `FCGI_SOCKET`         | *(unset)*  | Direct FCGI socket (`:port` for TCP, or filesystem path for Unix socket). When set, the server runs standalone without `spawn-fcgi`. |
 | `FCGI_WORKERS`        | `20`       | Number of worker processes in direct socket mode (1–256). Each worker handles one concurrent client using `fork()`-based pre-forking. Idle workers cost ~few MB resident RAM each. |
 | `LONGPOLL_TIMEOUT_SEC`| `300`      | Max seconds to wait in long-poll `/r`    |
-| `CGI_URL_PATH`        | *(unset)*  | When set, the login (`/l`) response includes a config object `"c"` with `"baseURL"` set to this value. Used by the web server to advertise the URL prefix under which the backend is reachable (e.g. `/proxy/visu`). |
+| `BASE_URL`            | *(unset)*  | When set, the login (`/l`) response includes a config object `"c"` with `"baseURL"` set to this value. Used by the web server to advertise the URL prefix under which the backend is reachable (e.g. `/proxy/visu`). |
 | `DEBUG_BACKEND`       | *(unset)*  | Set to `1` to enable debug logging to stderr |
+
+At startup, the server logs the effective values of all configuration
+environment variables to stdout:
+
+```
+[INFO] cometvisu-knxd-fcgi 1.0.0 starting
+[INFO] Configuration:
+[INFO]   KNXD_SOCKET           /run/knx
+[INFO]   FCGI_SOCKET           (not set, spawn-fcgi mode)
+[INFO]   FCGI_WORKERS          10
+[INFO]   LONGPOLL_TIMEOUT_SEC  300
+[INFO]   ADDRESS_PREFIX        (not set)
+[INFO]   BASE_URL              /proxy/visu
+[INFO]   DEBUG_BACKEND         1
+```
 
 ### FastCGI environment variables
 

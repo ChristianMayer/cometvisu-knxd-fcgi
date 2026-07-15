@@ -37,6 +37,7 @@ target_link_libraries(cvknxd_version PUBLIC)
 add_library(cvknxd_knxd STATIC
     knxd/knxd_protocol.cpp
     knxd/knxd_client.cpp
+    knxd/knxd_connector.cpp
 )
 
 target_include_directories(cvknxd_knxd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${KNXD_INCLUDE_DIR})

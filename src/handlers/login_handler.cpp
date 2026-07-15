@@ -38,8 +38,8 @@ std::string LoginHandler::handle(std::string_view query_string) {
   json.add_string("v", "0.0.2");
   json.add_string("s", session_id);
 
-  // Include configuration block when CGI_URL_PATH is set
-  const char* url_path = std::getenv("CGI_URL_PATH");
+  // Include configuration block when BASE_URL is set
+  const char* url_path = std::getenv("BASE_URL");
   if (url_path != nullptr && url_path[0] != '\0') {
     json.add_key("c");
     json.start_object();

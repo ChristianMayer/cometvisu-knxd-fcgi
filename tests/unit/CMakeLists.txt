@@ -73,3 +73,9 @@ add_executable(test_fcgi_server
 )
 target_link_libraries(test_fcgi_server PRIVATE cvknxd_fcgi cvknxd_util GTest::gtest GTest::gtest_main)
 add_test(NAME test_fcgi_server COMMAND test_fcgi_server)
+
+add_executable(test_knxd_connector
+    test_knxd_connector.cpp
+)
+target_link_libraries(test_knxd_connector PRIVATE cvknxd_knxd cvknxd_mocks GTest::gtest GTest::gtest_main)
+add_test(NAME test_knxd_connector COMMAND test_knxd_connector)

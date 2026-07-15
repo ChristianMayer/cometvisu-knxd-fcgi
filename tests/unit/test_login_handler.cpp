@@ -115,8 +115,8 @@ TEST(LoginHandlerTest, DifferentSessionsAreUnique) {
 }
 
 TEST(LoginHandlerTest, ConfigBlockAbsentWhenNoUrlPath) {
-  // Ensure CGI_URL_PATH is not set
-  ScopedEnvVar clear("CGI_URL_PATH", nullptr);
+  // Ensure BASE_URL is not set
+  ScopedEnvVar clear("BASE_URL", nullptr);
 
   SessionStore sessions;
   LoginHandler handler(sessions);
@@ -126,7 +126,7 @@ TEST(LoginHandlerTest, ConfigBlockAbsentWhenNoUrlPath) {
 }
 
 TEST(LoginHandlerTest, ConfigBlockPresentWhenUrlPathSet) {
-  ScopedEnvVar set("CGI_URL_PATH", "/proxy/visu");
+  ScopedEnvVar set("BASE_URL", "/proxy/visu");
 
   SessionStore sessions;
   LoginHandler handler(sessions);
@@ -138,7 +138,7 @@ TEST(LoginHandlerTest, ConfigBlockPresentWhenUrlPathSet) {
 }
 
 TEST(LoginHandlerTest, ConfigBlockWithCustomUrlPath) {
-  ScopedEnvVar set("CGI_URL_PATH", "/custom/prefix");
+  ScopedEnvVar set("BASE_URL", "/custom/prefix");
 
   SessionStore sessions;
   LoginHandler handler(sessions);
@@ -148,7 +148,7 @@ TEST(LoginHandlerTest, ConfigBlockWithCustomUrlPath) {
 }
 
 TEST(LoginHandlerTest, ConfigBlockIgnoredWhenUrlPathEmpty) {
-  ScopedEnvVar set("CGI_URL_PATH", "");
+  ScopedEnvVar set("BASE_URL", "");
 
   SessionStore sessions;
   LoginHandler handler(sessions);

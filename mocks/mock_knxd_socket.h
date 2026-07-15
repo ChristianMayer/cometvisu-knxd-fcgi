@@ -87,10 +87,15 @@ public:
   /// (simulating connection loss / knxd restart).
   void set_cache_read_fail_count(int count) { cache_read_fail_count_ = count; }
 
+  /// Make the next N calls to connect() return false before succeeding.
+  /// After N failures, connect() returns connection_success_.
+  void set_connect_fail_count(int count) { connect_fail_count_ = count; }
+
 private:
   bool connected_ = false;
   bool group_socket_open_ = false;
   bool connection_success_ = true;
+  int connect_fail_count_ = 0;
   std::string last_socket_path_;
   std::unordered_map<uint16_t, std::vector<uint8_t>> cached_values_;
   std::queue<std::pair<uint16_t, std::vector<uint8_t>>> telegram_queue_;

@@ -27,6 +27,7 @@
 
 #include "fcgi/fcgi_server.h"
 #include "knxd/knxd_client.h"
+#include "knxd/knxd_connector.h"
 #include "knxd/knxd_protocol.h"
 #include "router/router.h"
 #include "state/session_store.h"
@@ -92,6 +93,8 @@ int main(int argc, char* argv[]) {
           << "  LONGPOLL_TIMEOUT_SEC  Max seconds to wait in long-poll /r (default: 300)\n"
           << "  ADDRESS_PREFIX        Namespace prefix for addresses without explicit prefix\n"
           << "                        (default: empty = no prefix, e.g. set to \"KNX\")\n"
+          << "  BASE_URL              URL prefix advertised in login response (unset = omitted)\n"
+          << "                        (default: not set, e.g. /proxy/visu)\n"
           << "  DEBUG_BACKEND         Set to 1 to enable debug logging to stderr\n"
           << "\n"
           << "When run without options, starts the FastCGI server loop.\n";
@@ -123,16 +126,58 @@ int main(int argc, char* argv[]) {
   const char* address_prefix = get_env_default("ADDRESS_PREFIX", "");
   KnxAddress::set_default_namespace(address_prefix);
 
-  // ---- Initialize components ----
+  // ---- Base URL for login response ----
+  // When set, the /l endpoint includes a "c" object with "baseURL" set to this value.
+  const char* base_url = getenv("BASE_URL");
+
+  // ---- Optional direct socket (standalone mode) ----
+  // Set FCGI_SOCKET to a TCP port (":9000") or Unix socket path to run without
+  // spawn-fcgi. Read early so startup info can show it.
+  const char* fcgi_socket = get_env_default("FCGI_SOCKET", "");
+
+  // ---- Startup info ----
+  std::cout << "[INFO] cometvisu-knxd-fcgi " << version() << " starting\n";
+  std::cout << "[INFO] Configuration:\n";
+  std::cout << "[INFO]   KNXD_SOCKET           " << knxd_socket << "\n";
+  std::cout << "[INFO]   FCGI_SOCKET           "
+            << (fcgi_socket[0] != '\0' ? fcgi_socket : "(not set, spawn-fcgi mode)") << "\n";
+  std::cout << "[INFO]   FCGI_WORKERS          " << num_workers << "\n";
+  std::cout << "[INFO]   LONGPOLL_TIMEOUT_SEC  " << longpoll_timeout << "\n";
+  std::cout << "[INFO]   ADDRESS_PREFIX        "
+            << (address_prefix[0] != '\0' ? address_prefix : "(not set)") << "\n";
+  std::cout << "[INFO]   BASE_URL              "
+            << (base_url != nullptr && base_url[0] != '\0' ? base_url : "(not set)") << "\n";
+  std::cout << "[INFO]   DEBUG_BACKEND         "
+            << (getenv("DEBUG_BACKEND") != nullptr ? getenv("DEBUG_BACKEND") : "(not set)") << "\n";
+
+  // ---- Initialize FCGI server (before knxd) ----
+  // Set up the FastCGI listen socket first so it's ready for connections
+  // before attempting the potentially slow knxd connection.
+  // In spawn-fcgi mode (no FCGI_SOCKET), the web server handles stdin/stdout.
+  FcgiServer server;
+  if (fcgi_socket[0] != '\0') {
+    if (server.listen(fcgi_socket)) {
+      std::cout << "[INFO] Direct FCGI socket: " << fcgi_socket << "\n";
+    } else {
+      std::cerr << "[ERROR] Failed to open FCGI socket: " << fcgi_socket << "\n";
+      return 1;
+    }
+  }
+
+  // ---- Connect to knxd with retry ----
+  // First-time connection (has_worked_before=false): retry after 500ms, 1s, 2s.
+  // If the connection was previously successful (reconnect), extended retries
+  // at 4s and 8s are also attempted.
   KnxdClient knxd;
-  if (!knxd.connect(knxd_socket)) {
-    std::cerr << "[ERROR] Cannot connect to knxd at " << knxd_socket << "\n";
+  if (!connect_knxd_with_retry(knxd, knxd_socket, false)) {
+    std::cerr << "[ERROR] Cannot connect to knxd at " << knxd_socket << " after all retries\n";
     return 1;
   }
 
   // Open group socket for sending and receiving
   if (!knxd.open_group_socket(false)) {
     std::cerr << "[ERROR] Cannot open group socket on knxd\n";
+    knxd.disconnect();
     return 1;
   }
 
@@ -141,29 +186,12 @@ int main(int argc, char* argv[]) {
 
   SessionStore sessions;
 
-  // ---- Create router and server ----
+  // ---- Create router ----
   // No local cache — we delegate to knxd's built-in cache via cache_read().
   Router router(knxd, sessions, longpoll_timeout);
 
-  FcgiServer server;
+  // Register the request handler on the FCGI server
   server.set_handler([&](const FcgiRequest& req) -> FcgiResponse { return router.route(req); });
-
-  // ---- Optional direct socket (standalone mode) ----
-  // Set FCGI_SOCKET to a TCP port (":9000") or Unix socket path to run without
-  // spawn-fcgi. When unset, the server uses the standard FCGI stdin/stdout
-  // stream set up by spawn-fcgi or the web server.
-  const char* fcgi_socket = get_env_default("FCGI_SOCKET", "");
-  if (fcgi_socket[0] != '\0') {
-    if (server.listen(fcgi_socket)) {
-      std::cout << "[INFO] Direct FCGI socket: " << fcgi_socket << "\n";
-    } else {
-      std::cerr << "[ERROR] Failed to open FCGI socket: " << fcgi_socket << "\n";
-      knxd.disconnect();
-      return 1;
-    }
-  }
-
-  std::cout << "[INFO] cometvisu-knxd-fcgi starting, knxd socket: " << knxd_socket << "\n";
 
   // ---- Run ----
   int result = 0;
@@ -209,10 +237,11 @@ int main(int argc, char* argv[]) {
         // opens its own to avoid contention on the shared fd.
         knxd.disconnect();
 
-        if (!knxd.connect(knxd_socket)) {
+        // The parent successfully connected to knxd, so use extended retry delays
+        // (500ms, 1s, 2s, 4s, 8s) in case knxd is temporarily unavailable.
+        if (!connect_knxd_with_retry(knxd, knxd_socket, true)) {
           std::cerr << "[ERROR] Worker pid=" << ::getpid() << " (worker " << i
-                    << "): Cannot connect to knxd at " << knxd_socket << ": "
-                    << std::strerror(errno) << " (errno=" << errno << ")\n";
+                    << "): Cannot connect to knxd at " << knxd_socket << " after all retries\n";
           std::_Exit(1);
         }
 

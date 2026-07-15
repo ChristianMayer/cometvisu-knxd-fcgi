@@ -19,6 +19,11 @@ namespace cvknxd {
 
 bool MockKnxdClient::connect(std::string_view socket_path) {
   last_socket_path_ = socket_path;
+  if (connect_fail_count_ > 0) {
+    connect_fail_count_--;
+    connected_ = false;
+    return false;
+  }
   connected_ = connection_success_;
   return connected_;
 }
