@@ -48,7 +48,7 @@ FCGI_SOCKET=/tmp/cometvisu-fcgi.sock ./build/src/cometvisu-knxd-fcgi
 |-----------------------|------------|------------------------------------------|
 | `KNXD_SOCKET`         | `/run/knx` | Path to the knxd Unix socket             |
 | `FCGI_SOCKET`         | *(unset)*  | Direct FCGI socket (`:port` for TCP, or filesystem path for Unix socket). When set, the server runs standalone without `spawn-fcgi`. |
-| `FCGI_THREADS`        | `20`       | Number of worker threads in direct socket mode (1–256). Each thread handles one concurrent client. Idle threads cost negligible resources — blocked in `accept()` or `poll()` they consume zero CPU and only ~16-32 KB RAM each. |
+| `FCGI_WORKERS`        | `20`       | Number of worker processes in direct socket mode (1–256). Each worker handles one concurrent client using `fork()`-based pre-forking. Idle workers cost ~few MB resident RAM each. |
 | `LONGPOLL_TIMEOUT_SEC`| `300`      | Max seconds to wait in long-poll `/r`    |
 | `DEBUG_BACKEND`       | *(unset)*  | Set to `1` to enable debug logging to stderr |
 

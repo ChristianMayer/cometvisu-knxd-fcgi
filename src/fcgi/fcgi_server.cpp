@@ -133,7 +133,7 @@ void FcgiServer::shutdown() {
   shutdown_requested_.store(true, std::memory_order_relaxed);
 
   if (listen_fd_ >= 0) {
-    // Step 1: shutdown(SHUT_RDWR) causes any thread blocked in accept()
+    // Step 1: shutdown(SHUT_RDWR) causes any worker blocked in accept()
     // on this fd to fail with EINVAL. This is reliable on Linux, unlike
     // close() which may leave accept() blocked indefinitely.
     ::shutdown(listen_fd_, SHUT_RDWR);

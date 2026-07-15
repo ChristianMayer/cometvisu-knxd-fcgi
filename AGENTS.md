@@ -95,19 +95,24 @@ actual file content (e.g., `#pragma once` or `#include`).
 
 ## Key Design Decisions
 
-1. **Multi-threaded FCGI server**: The FCGI accept loop uses multiple worker
-   threads, each running its own `FCGX_Accept_r()` on the shared listen socket.
-   The OS serializes accept calls across threads. This is critical because
-   long-poll `/r` requests block for up to 300 seconds — without threading,
-   one long-poll would block all other clients. Thread count is configurable
-   (default: 4). All shared state (KnxdClient, SessionStore) is protected by
-   `std::mutex`.
+1. **Fork-based worker pool**: The FCGI accept loop uses multiple forked
+   worker processes, each running its own `FCGX_Accept_r()` loop on the
+   shared listen socket. The OS serializes accept calls across processes.
+   This is critical because long-poll `/r` requests block for up to 300
+   seconds — without multiple workers, one long-poll would block all other
+   clients. Worker count is configurable via `FCGI_WORKERS` (default: 20).
+   Each worker opens its own knxd connection.
+   All shared state (KnxdClient, SessionStore) is protected by
+   `std::mutex`/`std::recursive_mutex` for thread-safe access within each
+   process.
+   Fork-based workers avoid Docker < 20.10.10 seccomp incompatibility where
+   `clone3`/`clone` with process-sharing flags (CLONE_VM, CLONE_THREAD) is
+   blocked, preventing `std::thread` creation.
 
-2. **Knxd connection is persistent**: A single Unix socket connection to knxd
-   is opened at startup and reused for all requests. The client opens a "Group
+2. **Knxd connection is persistent**: Each worker process opens its own
+   Unix socket connection to knxd at startup. Each process opens a "Group
    Socket" (not a T_Group tunnel per address) for listening to group telegrams.
-   Access to the knxd socket is serialized via mutex since multiple worker
-   threads share the same connection.
+   Access to each connection is serialized via mutex for thread safety.
 
 3. **Address cache**: Maintains a `std::unordered_map<group_addr, CacheEntry>`
    where `CacheEntry` has `value`, `last_updated` timestamp.

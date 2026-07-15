@@ -13,11 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
 #include <charconv>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "fcgi/fcgi_server.h"
 #include "knxd/knxd_client.h"
@@ -81,7 +87,7 @@ int main(int argc, char* argv[]) {
           << "Environment variables:\n"
           << "  KNXD_SOCKET           Path to the knxd Unix socket (default: /run/knx)\n"
           << "  FCGI_SOCKET           Direct FCGI socket (unset = spawn-fcgi mode)\n"
-          << "  FCGI_THREADS          Worker threads in direct socket mode (default: 20, "
+          << "  FCGI_WORKERS          Worker processes in direct socket mode (default: 20, "
              "max: 256)\n"
           << "  LONGPOLL_TIMEOUT_SEC  Max seconds to wait in long-poll /r (default: 300)\n"
           << "  ADDRESS_PREFIX        Namespace prefix for addresses without explicit prefix\n"
@@ -108,7 +114,7 @@ int main(int argc, char* argv[]) {
   //     sufficient access to compromise the system directly.
   const char* knxd_socket = get_env_default("KNXD_SOCKET", "/run/knx");
   int longpoll_timeout = parse_env_int("LONGPOLL_TIMEOUT_SEC", 300, 1, kMaxLongpollTimeoutSec);
-  int fcgi_threads = parse_env_int("FCGI_THREADS", 20, 1, 256);
+  int num_workers = parse_env_int("FCGI_WORKERS", 20, 1, 256);
 
   // ---- Address prefix (namespace) ----
   // When the client sends addresses without a namespace prefix (no colon),
@@ -160,12 +166,116 @@ int main(int argc, char* argv[]) {
   std::cout << "[INFO] cometvisu-knxd-fcgi starting, knxd socket: " << knxd_socket << "\n";
 
   // ---- Run ----
-  int result;
+  int result = 0;
   if (fcgi_socket[0] != '\0') {
-    // Direct socket mode: use multi-threaded accept loop to handle
-    // concurrent clients (including long-poll /r requests).
-    std::cout << "[INFO] Using " << fcgi_threads << " worker threads\n";
-    result = server.run_multithreaded(fcgi_threads);
+    // Fork-based worker pool: each child process runs an independent
+    // accept loop on the shared listen socket. The OS serializes accept()
+    // across processes.
+    //
+    // This avoids Docker < 20.10.10 seccomp issues where clone3/clone
+    // with process-sharing flags (CLONE_VM, CLONE_THREAD, etc.) are
+    // blocked, preventing std::thread creation.  fork() uses plain process cloning
+    // which is permitted by all seccomp profiles.
+    //
+    // Each child opens its own knxd connection to avoid contention on
+    // the shared file descriptor.  Session state is per-process (same
+    // limitation as spawn-fcgi mode).
+    std::cout << "[INFO] Starting " << num_workers << " worker processes\n";
+
+    pid_t parent_pid = ::getpid();
+    (void)parent_pid;  // used for debugging / signal filtering if needed
+    std::vector<pid_t> worker_pids;
+    worker_pids.reserve(static_cast<size_t>(num_workers));
+
+    bool fork_failed = false;
+    int fork_errno = 0;
+
+    for (int i = 0; i < num_workers; ++i) {
+      pid_t pid = ::fork();
+      if (pid < 0) {
+        fork_errno = errno;
+        std::cerr << "[ERROR] fork() for worker " << (i + 1) << "/" << num_workers
+                  << " failed: " << std::strerror(fork_errno) << " (errno=" << fork_errno << ")\n";
+        fork_failed = true;
+        break;
+      }
+
+      if (pid == 0) {
+        // ================================================
+        // Child process — worker
+        // ================================================
+
+        // Close the inherited knxd connection.  Each worker
+        // opens its own to avoid contention on the shared fd.
+        knxd.disconnect();
+
+        if (!knxd.connect(knxd_socket)) {
+          std::cerr << "[ERROR] Worker pid=" << ::getpid() << " (worker " << i
+                    << "): Cannot connect to knxd at " << knxd_socket << ": "
+                    << std::strerror(errno) << " (errno=" << errno << ")\n";
+          std::_Exit(1);
+        }
+
+        if (!knxd.open_group_socket(false)) {
+          std::cerr << "[ERROR] Worker pid=" << ::getpid() << " (worker " << i
+                    << "): Cannot open group socket "
+                    << "on knxd at " << knxd_socket << " (check knxd is running and accessible)\n";
+          std::_Exit(2);
+        }
+
+        knxd.set_nonblocking(true);
+        std::cout << "[INFO] Worker " << i << " ready, pid=" << ::getpid() << "\n";
+
+        // Run the accept loop.  Blocks until the listen socket is
+        // shut down (by parent SIGTERM).
+        int child_result = server.run();
+        knxd.disconnect();
+        std::_Exit(child_result);
+      }
+
+      // Parent continues: record the child PID
+      worker_pids.push_back(pid);
+      std::cout << "[INFO] Started worker " << i << "/" << num_workers << " pid=" << pid << "\n";
+    }
+
+    if (fork_failed) {
+      // Kill all successfully started children
+      std::cerr << "[ERROR] fork() failed for worker " << (worker_pids.size() + 1) << "/"
+                << num_workers << ", terminating " << worker_pids.size()
+                << " already-started worker(s)\n";
+      for (pid_t pid : worker_pids) {
+        ::kill(pid, SIGTERM);
+      }
+      // Wait for killed children
+      int status;
+      for (size_t k = 0; k < worker_pids.size(); ++k) {
+        ::wait(&status);
+      }
+      result = 1;
+    } else {
+      std::cout << "[INFO] All " << num_workers << " workers started, waiting for children...\n";
+
+      // Wait for all child processes.  When a child exits
+      // unexpectedly, log it and continue waiting for others.
+      int status;
+      pid_t waited;
+      while ((waited = ::wait(&status)) > 0) {
+        if (WIFEXITED(status)) {
+          int exit_code = WEXITSTATUS(status);
+          if (exit_code != 0) {
+            std::cerr << "[WARN] Worker pid=" << waited << " exited with code " << exit_code
+                      << "\n";
+          }
+        } else if (WIFSIGNALED(status)) {
+          std::cerr << "[WARN] Worker pid=" << waited << " killed by signal " << WTERMSIG(status);
+          if (WCOREDUMP(status)) {
+            std::cerr << " (core dumped)";
+          }
+          std::cerr << "\n";
+        }
+      }
+      result = 0;
+    }
   } else {
     // Spawn-fcgi mode: concurrency is handled by running multiple
     // process instances via spawn-fcgi (e.g., spawn-fcgi -F N).
