@@ -15,6 +15,8 @@
 
 #include "login_handler.h"
 
+#include <cstdlib>
+
 #include "state/session_store.h"
 #include "util/json_builder.h"
 #include "util/query_string.h"
@@ -35,6 +37,16 @@ std::string LoginHandler::handle(std::string_view query_string) {
   json.start_object();
   json.add_string("v", "0.0.2");
   json.add_string("s", session_id);
+
+  // Include configuration block when CGI_URL_PATH is set
+  const char* url_path = std::getenv("CGI_URL_PATH");
+  if (url_path != nullptr && url_path[0] != '\0') {
+    json.add_key("c");
+    json.start_object();
+    json.add_string("baseURL", url_path);
+    json.end_object();
+  }
+
   json.end_object();
 
   return json.take();

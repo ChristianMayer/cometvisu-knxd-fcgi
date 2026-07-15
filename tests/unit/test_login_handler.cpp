@@ -15,10 +15,32 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+
 #include "handlers/login_handler.h"
 #include "state/session_store.h"
 
 using namespace cvknxd;
+
+namespace {
+
+/// Helper: set an environment variable for the duration of a test case.
+class ScopedEnvVar {
+public:
+  ScopedEnvVar(const char* name, const char* value) : name_(name) {
+    if (value != nullptr) {
+      setenv(name, value, 1);
+    } else {
+      unsetenv(name);
+    }
+  }
+  ~ScopedEnvVar() { unsetenv(name_); }
+
+private:
+  const char* name_;
+};
+
+}  // namespace
 
 TEST(LoginHandlerTest, AnonymousLogin) {
   SessionStore sessions;
@@ -77,9 +99,11 @@ TEST(LoginHandlerTest, DifferentSessionsAreUnique) {
 
   auto extract_sid = [](const std::string& json) -> std::string {
     auto s = json.find("\"s\":\"");
-    if (s == std::string::npos) return "";
+    if (s == std::string::npos)
+      return "";
     auto e = json.find('"', s + 5);
-    if (e == std::string::npos) return "";
+    if (e == std::string::npos)
+      return "";
     return json.substr(s + 5, e - s - 5);
   };
 
@@ -88,4 +112,47 @@ TEST(LoginHandlerTest, DifferentSessionsAreUnique) {
   EXPECT_NE(sid1, "0");
   EXPECT_NE(sid2, "0");
   EXPECT_NE(sid1, sid2);
+}
+
+TEST(LoginHandlerTest, ConfigBlockAbsentWhenNoUrlPath) {
+  // Ensure CGI_URL_PATH is not set
+  ScopedEnvVar clear("CGI_URL_PATH", nullptr);
+
+  SessionStore sessions;
+  LoginHandler handler(sessions);
+
+  std::string response = handler.handle("");
+  EXPECT_EQ(response.find("\"c\""), std::string::npos);
+}
+
+TEST(LoginHandlerTest, ConfigBlockPresentWhenUrlPathSet) {
+  ScopedEnvVar set("CGI_URL_PATH", "/proxy/visu");
+
+  SessionStore sessions;
+  LoginHandler handler(sessions);
+
+  std::string response = handler.handle("");
+  EXPECT_NE(response.find("\"c\""), std::string::npos);
+  EXPECT_NE(response.find("\"baseURL\""), std::string::npos);
+  EXPECT_NE(response.find("\"/proxy/visu\""), std::string::npos);
+}
+
+TEST(LoginHandlerTest, ConfigBlockWithCustomUrlPath) {
+  ScopedEnvVar set("CGI_URL_PATH", "/custom/prefix");
+
+  SessionStore sessions;
+  LoginHandler handler(sessions);
+
+  std::string response = handler.handle("");
+  EXPECT_NE(response.find("\"baseURL\":\"/custom/prefix\""), std::string::npos);
+}
+
+TEST(LoginHandlerTest, ConfigBlockIgnoredWhenUrlPathEmpty) {
+  ScopedEnvVar set("CGI_URL_PATH", "");
+
+  SessionStore sessions;
+  LoginHandler handler(sessions);
+
+  std::string response = handler.handle("");
+  EXPECT_EQ(response.find("\"c\""), std::string::npos);
 }
