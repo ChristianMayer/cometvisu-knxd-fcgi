@@ -77,6 +77,8 @@ std::optional<std::vector<uint8_t>> MockKnxdClient::cache_read(uint16_t group_ad
 
 std::optional<LastUpdatesResult> MockKnxdClient::cache_last_updates_2(uint32_t start,
                                                                       int /*timeout_sec*/) {
+  cache_last_updates_call_count_++;
+
   if (!connected_)
     return std::nullopt;
 
@@ -157,6 +159,7 @@ void MockKnxdClient::reset() {
     last_updates_queue_.pop();
   cache_updates_fail_count_ = 0;
   cache_read_fail_count_ = 0;
+  cache_last_updates_call_count_ = 0;
 }
 
 void MockKnxdClient::set_last_updates_result(uint32_t after_position,

@@ -164,6 +164,15 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
   // - Stop when timeout elapses
   auto tstart = std::chrono::steady_clock::now();
 
+  // Retry counter for transient cache_last_updates_2 failures.
+  // When cache_last_updates_2 returns nullopt but the main connection is
+  // alive, it may be a transient cache connection failure (e.g., knxd
+  // temporarily not accepting new connections). Retry a few times with
+  // delays before giving up. This counter is scoped to the outer while
+  // loop — each successful call resets our confidence.
+  int nullopt_retries = 0;
+  static constexpr int kMaxNulloptRetries = 5;
+
   while ((!written || lastpos < 1) && timeout_sec > 0) {
     // Calculate remaining time
     auto elapsed =
@@ -183,7 +192,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     auto updates = knxd_.cache_last_updates_2(lastpos, remaining);
     if (!updates.has_value()) {
       // cache_last_updates_2 can return nullopt for three reasons:
-      // 1. No pending updates (returns immediately) — break normally.
+      // 1. Transient cache connection failure — retry with delay.
       // 2. Connection error — reconnect and retry if time remains.
       // 3. Timeout (blocks for remaining time) — break normally.
       //
@@ -203,10 +212,21 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
         }
       }
 
-      // Connection is alive — either immediate "no data" or legitimate timeout.
-      // In either case, there's nothing to wait for; exit the poll loop.
+      // Connection is alive but cache_last_updates_2 returned nullopt.
+      // This can happen due to transient cache connection failures
+      // (e.g., knxd temporarily not accepting new connections) or
+      // when the mock has no queued results. Retry a limited number
+      // of times before giving up to avoid an infinite loop.
+      if (remaining > 0 && nullopt_retries < kMaxNulloptRetries) {
+        nullopt_retries++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        continue;
+      }
       break;
     }
+
+    // Successful call — reset retry counter
+    nullopt_retries = 0;
 
     uint32_t prev_lastpos = lastpos;
     lastpos = updates->new_position;
@@ -233,13 +253,13 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
 
     // Guard against busy-loop: if no progress was made (position didn't
     // advance and no changes found), knxd's internal timeout (~1s) expired
-    // with no updates. Continue polling — don't sleep-and-break, because
-    // a telegram could arrive at any moment. The outer while loop handles
-    // the overall timeout via elapsed/remaining calculation.
+    // with no updates. Sleep briefly to avoid tight CPU spinning when knxd
+    // returns empty results immediately (e.g., on a fresh bus with no
+    // traffic). The outer while loop handles the overall timeout via
+    // elapsed/remaining calculation.
     if (lastpos == prev_lastpos && updates->changed_addresses.empty()) {
-      // knxd returns "no updates" after its internal ~1s timeout.
-      // Just continue the poll loop — the next cache_last_updates_2
-      // call will either return new updates or time out again.
+      // knxd returned "no updates" — pause briefly then continue polling.
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
     }
 

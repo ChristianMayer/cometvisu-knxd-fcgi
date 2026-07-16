@@ -528,6 +528,88 @@ TEST_F(ReadHandlerTest, TimeoutZeroForcesInitialRead) {
   EXPECT_NE(result.body.find("\"i\":5"), std::string::npos);
 }
 
+// ============================================================================
+// Tests for transient cache connection failures
+// These tests verify the handler retries instead of breaking immediately
+// when cache_last_updates_2 returns nullopt (simulating transient knxd
+// unavailability) while the main connection is still alive.
+// ============================================================================
+
+TEST_F(ReadHandlerTest, RetriesOnTransientCacheUpdatesNullopt) {
+  // When cache_last_updates_2 returns nullopt (queue empty) but the main
+  // knxd connection is alive, the handler should retry a few times instead
+  // of breaking immediately. This simulates a transient cache connection
+  // failure in the real implementation.
+  ReadHandler handler(knxd_, sessions_);
+
+  // First call returns a valid empty result (simulating knxd responding
+  // with "no updates yet, position advanced to 5")
+  knxd_.set_last_updates_result(0, {}, 5);
+
+  // Subsequent calls return nullopt because the queue is empty.
+  // The handler should retry instead of breaking immediately.
+
+  auto result = handler.handle("a=1/2/3&t=1");
+
+  EXPECT_EQ(result.http_status, 200);
+  EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":5"), std::string::npos);
+
+  // With the current broken behavior, cache_last_updates_2 is called exactly 2 times:
+  //   call 1: valid result → loop
+  //   call 2: nullopt → break (BUG!)
+  // With the fix, the handler should retry on nullopt, making more calls.
+  EXPECT_GT(knxd_.cache_last_updates_call_count(), 2)
+      << "Handler should retry cache_last_updates_2 on transient nullopt, "
+      << "but only called " << knxd_.cache_last_updates_call_count() << " times";
+}
+
+TEST_F(ReadHandlerTest, NoProgressPathDoesNotSpinTightly) {
+  // When knxd returns valid-but-empty results (no changed addresses,
+  // position unchanged), the handler should sleep briefly instead of
+  // spinning in a tight CPU loop.
+  ReadHandler handler(knxd_, sessions_);
+
+  // Queue several "no update" results with the same position
+  knxd_.set_last_updates_result(0, {}, 0);  // position=0, no changes
+  knxd_.set_last_updates_result(0, {}, 0);  // same again
+
+  auto result = handler.handle("a=1/2/3&t=1");
+
+  EXPECT_EQ(result.http_status, 200);
+  EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":0"), std::string::npos);
+
+  // With the current broken behavior: 3 calls (2 queued + 1 nullopt → break).
+  // With the fix: the handler should also retry on nullopt, making > 3 calls.
+  EXPECT_GT(knxd_.cache_last_updates_call_count(), 3)
+      << "Handler should retry on nullopt after consuming queued results; got "
+      << knxd_.cache_last_updates_call_count() << " calls (expected > 3)";
+}
+
+TEST_F(ReadHandlerTest, RetriesCappedToAvoidInfiniteLoop) {
+  // When cache_last_updates_2 persistently returns nullopt (e.g., knxd
+  // is down), the handler should retry a limited number of times before
+  // giving up, not loop forever.
+  ReadHandler handler(knxd_, sessions_);
+
+  // No queued results — every call returns nullopt
+  // No t parameter → default timeout (300s). The retry cap should prevent
+  // an infinite loop even with a long timeout.
+
+  auto result = handler.handle("a=1/2/3");
+
+  EXPECT_EQ(result.http_status, 200);
+  EXPECT_NE(result.body.find("\"d\":{}"), std::string::npos);
+  EXPECT_NE(result.body.find("\"i\":0"), std::string::npos);
+
+  // With the current broken behavior: 1 call (nullopt → break immediately).
+  // With the fix: retry a few times before giving up. Should be > 1 but < 20.
+  int calls = knxd_.cache_last_updates_call_count();
+  EXPECT_GT(calls, 1) << "Handler should retry before giving up; got " << calls << " call(s)";
+  EXPECT_LT(calls, 20) << "Handler should cap retries; got " << calls << " calls (expected < 20)";
+}
+
 TEST_F(ReadHandlerTest, TimeoutNegativeIsTreatedAsNormalTimeout) {
   // t=-1 should be parsed as -1 and treated like any timeout value.
   // Negative timeout means immediate timeout in practice.

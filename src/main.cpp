@@ -221,6 +221,7 @@ int main(int argc, char* argv[]) {
     // the shared file descriptor.  Session state is per-process (same
     // limitation as spawn-fcgi mode).
     std::cout << "[INFO] Starting " << num_workers << " worker processes\n";
+    std::cout << std::flush;  // Flush before fork to avoid buffer duplication in children
 
     pid_t parent_pid = ::getpid();
     (void)parent_pid;  // used for debugging / signal filtering if needed

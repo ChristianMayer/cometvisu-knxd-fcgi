@@ -91,6 +91,9 @@ public:
   /// After N failures, connect() returns connection_success_.
   void set_connect_fail_count(int count) { connect_fail_count_ = count; }
 
+  /// Get the number of times cache_last_updates_2 was called since last reset.
+  [[nodiscard]] int cache_last_updates_call_count() const { return cache_last_updates_call_count_; }
+
 private:
   bool connected_ = false;
   bool group_socket_open_ = false;
@@ -113,6 +116,9 @@ private:
   // Fail-count controls for testing reconnection resilience
   int cache_updates_fail_count_ = 0;
   int cache_read_fail_count_ = 0;
+
+  // Call counter for verifying retry behavior
+  int cache_last_updates_call_count_ = 0;
 };
 
 }  // namespace cvknxd
