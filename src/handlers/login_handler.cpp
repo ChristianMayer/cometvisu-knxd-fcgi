@@ -15,7 +15,6 @@
 
 #include "login_handler.h"
 
-#include <algorithm>
 #include <cstdio>
 
 #include "state/session_store.h"
@@ -24,6 +23,10 @@
 #include "version.h"
 
 namespace cvknxd {
+
+/// CometVisu protocol version reported in the login response "v" field.
+/// This is the wire-protocol version, not the software version.
+static constexpr std::string_view kProtocolVersion = "0.0.2";
 
 LoginHandler::LoginHandler(SessionStore& sessions, std::string base_url)
     : sessions_(sessions), base_url_(std::move(base_url)) {}
@@ -50,22 +53,22 @@ std::string LoginHandler::query_knxd_version() {
 }
 
 std::string LoginHandler::handle(std::string_view query_string) {
-  QueryString params{query_string};
+  const QueryString params{query_string};
 
-  bool anonymous = !params.has("u") && !params.has("p");
-  std::string session_id = sessions_.create_session(anonymous);
+  const bool anonymous = !params.has("u") && !params.has("p");
+  const std::string session_id = sessions_.create_session(anonymous);
 
   JsonBuilder json;
   json.start_object();
-  json.add_string("v", "0.0.2");
+  json.add_string("v", kProtocolVersion);
   json.add_string("s", session_id);
 
   // Gather version info (compile-time + runtime, lazy cached)
   bool need_config = !base_url_.empty();
-  std::string fcgi_ver(version());
-  std::string fcgi_hash(git_hash());
-  std::string knxd_bver(knxd_build_version());
-  std::string knxd_bhash(knxd_build_git_hash());
+  const std::string_view fcgi_ver = version();
+  const std::string_view fcgi_hash = git_hash();
+  const std::string_view knxd_bver = knxd_build_version();
+  const std::string_view knxd_bhash = knxd_build_git_hash();
 
   if (!fcgi_ver.empty() && fcgi_ver != "unknown")
     need_config = true;

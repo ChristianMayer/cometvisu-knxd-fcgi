@@ -37,11 +37,11 @@ public:
 
 private:
   SessionStore& sessions_;
-  std::string base_url_;
+  const std::string base_url_;
 
   /// Cached knxd runtime version. Populated on first /l request by running
   /// `knxd --version`. Empty if knxd is not installed or the call fails.
-  mutable std::string cached_knxd_runtime_;
+  std::string cached_knxd_runtime_;
 
   /// Run `knxd --version` and extract the version string.
   [[nodiscard]] static std::string query_knxd_version();
