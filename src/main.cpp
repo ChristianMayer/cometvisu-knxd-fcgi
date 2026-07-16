@@ -13,6 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -38,6 +42,57 @@ namespace {
 
 /// Maximum long-poll timeout in seconds. Prevents DoS via huge timeout values.
 inline constexpr int kMaxLongpollTimeoutSec = 3600;  // 1 hour
+
+/// Maximum file descriptors per process. Prevents fd exhaustion on
+/// long-running embedded systems where slow leaks accumulate over years.
+inline constexpr rlim_t kMaxFileDescriptors = 256;
+
+/// Maximum virtual memory per worker process (64 MB). Prevents a single
+/// worker from exhausting system memory via a leak or unbounded growth.
+inline constexpr rlim_t kMaxWorkerMemoryBytes = 64ULL * 1024 * 1024;
+
+// ---- Signal handling ----
+// Signal handlers run in a restricted context (only async-signal-safe
+// functions are permitted).  They set volatile flags which the main loop
+// checks at well-defined points.
+volatile sig_atomic_t g_shutdown_requested = 0;
+
+extern "C" void handle_sigterm(int /*signum*/) {
+  g_shutdown_requested = 1;
+}
+
+extern "C" void handle_sigchld(int /*signum*/) {
+  // Reap all terminated children immediately to prevent zombies.
+  // save/restore errno so we don't clobber it for interrupted syscalls.
+  int saved_errno = errno;
+  while (::waitpid(-1, nullptr, WNOHANG) > 0) {
+  }
+  errno = saved_errno;
+}
+
+/// Set resource limits for long-running embedded operation.
+/// Called once at startup (before fork) so all children inherit the limits.
+void set_resource_limits() {
+  struct rlimit rl;
+
+  // Limit file descriptors to prevent exhaustion from slow leaks.
+  rl.rlim_cur = kMaxFileDescriptors;
+  rl.rlim_max = kMaxFileDescriptors;
+  if (::setrlimit(RLIMIT_NOFILE, &rl) != 0) {
+    std::cerr << "[WARN] Failed to set RLIMIT_NOFILE: " << std::strerror(errno) << "\n";
+  }
+
+  // Limit virtual memory per worker. Only the soft limit is set so
+  // the process can still be profiled/debugged with a higher hard limit.
+  // Children inherit this and optionally tighten it further.
+  rl.rlim_cur = kMaxWorkerMemoryBytes;
+  rl.rlim_max = RLIM_INFINITY;
+  if (::setrlimit(RLIMIT_AS, &rl) != 0) {
+    std::cerr << "[WARN] Failed to set RLIMIT_AS: " << std::strerror(errno) << "\n";
+  }
+  // Note: RLIMIT_AS may be reset per-worker in the child if tighter
+  // limits are needed. Currently all workers share the same limit.
+}
 
 /// Read an environment variable with a default value.
 const char* get_env_default(const char* name, const char* default_value) {
@@ -115,6 +170,17 @@ int main(int argc, char* argv[]) {
   // handling already copes with EPIPE correctly — it just needs the process
   // to stay alive to handle it.
   ::signal(SIGPIPE, SIG_IGN);
+
+  // Handle SIGTERM for graceful shutdown. The parent forwards the signal
+  // to all children, waits for them to exit, then exits itself.
+  ::signal(SIGTERM, handle_sigterm);
+
+  // Handle SIGCHLD to reap terminated children immediately, preventing
+  // zombie processes from accumulating.
+  ::signal(SIGCHLD, handle_sigchld);
+
+  // ---- Resource limits for embedded long-running operation ----
+  set_resource_limits();
 
   // ---- Configuration ----
   // Environment variables are inherited from the FCGI-spawning web server.
@@ -223,6 +289,25 @@ int main(int argc, char* argv[]) {
     std::cout << "[INFO] Starting " << num_workers << " worker processes\n";
     std::cout << std::flush;  // Flush before fork to avoid buffer duplication in children
 
+    // ---- Load shedding semaphore ----
+    // Shared semaphore to limit concurrent long-poll reads across workers.
+    // Initialized to num_workers so that when all workers are busy with
+    // long-poll reads, new read requests return empty immediately instead
+    // of queuing in the listen backlog. Write requests are always served.
+    sem_t* load_shed_sem = static_cast<sem_t*>(
+        ::mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
+    if (load_shed_sem == MAP_FAILED) {
+      std::cerr << "[WARN] Failed to create load-shed semaphore: " << std::strerror(errno)
+                << " (continuing without load shedding)\n";
+      load_shed_sem = nullptr;
+    } else if (::sem_init(load_shed_sem, 1, static_cast<unsigned>(num_workers)) != 0) {
+      std::cerr << "[WARN] Failed to init load-shed semaphore: " << std::strerror(errno)
+                << " (continuing without load shedding)\n";
+      ::munmap(load_shed_sem, sizeof(sem_t));
+      load_shed_sem = nullptr;
+    }
+    server.set_load_shed_semaphore(load_shed_sem);
+
     pid_t parent_pid = ::getpid();
     (void)parent_pid;  // used for debugging / signal filtering if needed
     std::vector<pid_t> worker_pids;
@@ -245,6 +330,17 @@ int main(int argc, char* argv[]) {
         // ================================================
         // Child process — worker
         // ================================================
+
+        // Ensure this child dies if the parent dies unexpectedly.
+        // Without this, orphaned children would keep running indefinitely,
+        // holding the FCGI listen socket open and accepting connections
+        // with no supervision — a resource leak on embedded systems.
+        ::prctl(PR_SET_PDEATHSIG, SIGTERM);
+
+        // Reset SIGTERM to default in the child so that the PDEATHSIG
+        // above actually terminates us (the parent's handler just sets
+        // a flag, which the child's accept loop never checks).
+        ::signal(SIGTERM, SIG_DFL);
 
         // Close the inherited knxd connection.  Each worker
         // opens its own to avoid contention on the shared fd.
@@ -280,11 +376,18 @@ int main(int argc, char* argv[]) {
       std::cout << "[INFO] Started worker " << i << "/" << num_workers << " pid=" << pid << "\n";
     }
 
-    // ---- Parent: close inherited knxd connection ----
+    // ---- Parent: close inherited resources ----
     // The parent process does not handle FCGI requests — it only waits for
     // children to exit.  Close the knxd connection now so we don't waste a
     // connection slot and don't interfere with the children's connections.
     knxd.disconnect();
+
+    // Close the listen socket in the parent. The children inherited it
+    // via fork(), so it stays open for them. The parent doesn't need it
+    // and holding it open wastes an fd on embedded systems.
+    if (server.is_listening()) {
+      server.close_listen_socket();
+    }
 
     if (fork_failed) {
       // Kill all successfully started children
@@ -302,12 +405,21 @@ int main(int argc, char* argv[]) {
       result = 1;
     } else {
       std::cout << "[INFO] All " << num_workers << " workers started, waiting for children...\n";
+      std::cout << std::flush;
 
-      // Wait for all child processes.  When a child exits
-      // unexpectedly, log it and continue waiting for others.
-      int status;
-      pid_t waited;
-      while ((waited = ::wait(&status)) > 0) {
+      // Wait for all child processes.  When a child exits unexpectedly,
+      // log it and continue waiting for others.  When SIGTERM is received,
+      // forward it to all children and wait for them to exit gracefully.
+      while (!g_shutdown_requested) {
+        int status;
+        pid_t waited = ::wait(&status);
+        if (waited < 0) {
+          if (errno == EINTR)
+            continue;  // interrupted by signal — check shutdown flag
+          if (errno == ECHILD)
+            break;  // no more children
+          break;
+        }
         if (WIFEXITED(status)) {
           int exit_code = WEXITSTATUS(status);
           if (exit_code != 0) {
@@ -322,7 +434,27 @@ int main(int argc, char* argv[]) {
           std::cerr << "\n";
         }
       }
+
+      // Shutdown requested: kill remaining children and wait for them
+      if (g_shutdown_requested) {
+        std::cout << "[INFO] Shutdown requested, stopping " << worker_pids.size()
+                  << " workers...\n";
+        for (pid_t pid : worker_pids) {
+          ::kill(pid, SIGTERM);
+        }
+        // Wait for all children to exit (SIGCHLD handler has already
+        // reaped those that exited immediately; this catches the rest).
+        int status;
+        while (::wait(&status) > 0) {
+        }
+      }
       result = 0;
+    }
+
+    // ---- Clean up shared semaphore ----
+    if (load_shed_sem != nullptr) {
+      ::sem_destroy(load_shed_sem);
+      ::munmap(load_shed_sem, sizeof(sem_t));
     }
   } else {
     // Spawn-fcgi mode: concurrency is handled by running multiple

@@ -70,7 +70,6 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
 
   // Write to each address
   bool any_valid = false;
-  bool any_success = false;
   for (auto addr_str : addresses) {
     auto parsed = KnxAddress::from_cometvisu(addr_str);
     if (!parsed)
@@ -78,9 +77,7 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
 
     any_valid = true;
     uint16_t eibaddr = parsed->group.to_eibaddr();
-    if (knxd_.send_group_packet(eibaddr, apdu)) {
-      any_success = true;
-    }
+    knxd_.send_group_packet(eibaddr, apdu);
   }
 
   // 404 only when all addresses had an invalid format.

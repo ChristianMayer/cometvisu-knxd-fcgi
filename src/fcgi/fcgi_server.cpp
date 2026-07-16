@@ -53,6 +53,10 @@ void FcgiServer::set_handler(RequestHandler handler) {
   handler_ = std::move(handler);
 }
 
+void FcgiServer::set_load_shed_semaphore(sem_t* sem) {
+  load_shed_sem_ = sem;
+}
+
 bool FcgiServer::listen(const std::string& socket_path, int backlog) {
   if (socket_path.empty()) {
     return false;
@@ -70,6 +74,13 @@ bool FcgiServer::listen(const std::string& socket_path, int backlog) {
 
 bool FcgiServer::is_listening() const {
   return listen_fd_ >= 0;
+}
+
+void FcgiServer::close_listen_socket() {
+  if (listen_fd_ >= 0) {
+    ::close(listen_fd_);
+    listen_fd_ = -1;
+  }
 }
 
 int FcgiServer::run() {
@@ -101,14 +112,46 @@ int FcgiServer::run() {
       // This avoids setting the global environ pointer, making it safe
       // for use in both single-threaded and multithreaded contexts.
       FcgiRequest req = read_request(request_.envp);
+
+      // ---- Load shedding for long-poll requests ----
+      // When a shared semaphore is configured, try to acquire it before
+      // dispatching read (long-poll) requests.  If the semaphore is
+      // exhausted (all workers busy with long-polls), return an empty
+      // response immediately.  Write requests bypass this check so they
+      // are always served, preventing head-of-line blocking from
+      // long-poll reads.
+      bool acquired_sem = false;
+      if (load_shed_sem_ != nullptr && req.path() == "/r") {
+        // sem_trywait returns 0 on success, -1 with EAGAIN if exhausted
+        if (::sem_trywait(load_shed_sem_) == 0) {
+          acquired_sem = true;
+        } else {
+          // All workers busy with long-polls — return empty immediately.
+          // The client will retry, and this frees up the accept queue for
+          // write requests which complete quickly.
+          FcgiResponse empty_resp;
+          empty_resp.body = "{}";
+          write_response(empty_resp);
+          FCGX_Finish_r(&request_);
+          continue;
+        }
+      }
+
       DebugLog::http_request(req.request_method, req.request_uri);
 
       FcgiResponse resp = handler_(req);
+
       DebugLog::http_response(resp.status_code, resp.body);
 
       write_response(resp);
 
       FCGX_Finish_r(&request_);
+
+      // Release the semaphore after the request completes so another
+      // worker can pick up a long-poll read.
+      if (acquired_sem) {
+        ::sem_post(load_shed_sem_);
+      }
     }
   } else {
     // ---- Spawn-fcgi mode ----

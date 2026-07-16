@@ -248,6 +248,15 @@ bool write_all(int fd, const uint8_t* data, size_t len) {
   return true;
 }
 
+/// Shrink a vector if it has significant excess capacity (more than 4x the used
+/// size or more than 64 KB of waste).  Prevents unbounded memory retention on
+/// long-running embedded systems after transient traffic spikes.
+inline void shrink_if_large(std::vector<uint8_t>& buf) {
+  if (buf.capacity() > buf.size() * 4 || (buf.capacity() - buf.size()) > 64 * 1024) {
+    buf.shrink_to_fit();
+  }
+}
+
 /// Read a complete eibd message (length-prefixed) from the socket.
 /// Uses an internal buffer to handle partial reads in non-blocking mode.
 /// This is an iterative (non-recursive) implementation to avoid stack overflow
@@ -260,8 +269,12 @@ std::optional<std::vector<uint8_t>> read_message(int fd, std::vector<uint8_t>& b
   while (true) {
     // Try to extract a complete message from the buffer (pure function, no I/O)
     auto msg = try_extract_message(buffer);
-    if (msg.has_value())
+    if (msg.has_value()) {
+      // Shrink the buffer after successful extraction to release memory
+      // back to the OS after traffic bursts.
+      shrink_if_large(buffer);
       return msg;
+    }
 
     // Need more data — read from socket
     uint8_t tmp[4096];
@@ -377,32 +390,48 @@ void KnxdClient::invalidate_cache() {
 }
 
 int* KnxdClient::ensure_cache_connection() {
-  std::lock_guard<std::recursive_mutex> cache_lock(impl_->cache_mutex);
-
-  // Always close any existing cache connection before opening a new one.
-  // The cache connection is a plain Unix socket without a group socket.
-  // knxd closes such connections after responding (only group-socket
-  // connections are kept alive).  Trying to keep and reuse them results
-  // in a stale-detect-reconnect loop on every cache operation.
-  if (impl_->cache_fd_ >= 0) {
-    ::close(impl_->cache_fd_);
-    impl_->cache_fd_ = -1;
-  }
-  impl_->cache_read_buffer_.clear();
-  {
-    std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
-    while (!impl_->pre_counted_telegrams_.empty())
-      impl_->pre_counted_telegrams_.pop();
-  }
-
-  // Copy socket_path_ under the main mutex to avoid a data race with
-  // connect() or reconnect() which may be modifying it concurrently.
+  // Copy socket_path_ under the main mutex FIRST (before cache_mutex) to
+  // maintain consistent lock ordering: mutex → cache_mutex → telegram_queue_mutex.
+  // Acquiring cache_mutex before mutex here would risk deadlock with
+  // disconnect()/reconnect() which acquire mutex → cache_mutex.
   std::string path;
   {
     std::lock_guard<std::recursive_mutex> main_lock(impl_->mutex);
     path = impl_->socket_path_;
   }
 
+  std::lock_guard<std::recursive_mutex> cache_lock(impl_->cache_mutex);
+
+  // Check if the existing cache connection is still alive.
+  // knxd may close plain (non-group-socket) connections after responding,
+  // but it may also keep them open for a short time.  A zero-timeout poll
+  // for POLLHUP detects stale connections without blocking, so we can
+  // reuse a live connection instead of always reconnecting.
+  if (impl_->cache_fd_ >= 0) {
+    struct pollfd pfd = {};
+    pfd.fd = impl_->cache_fd_;
+    pfd.events = 0;
+    pfd.revents = 0;
+    if (::poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLHUP | POLLERR)) != 0) {
+      // Connection is stale — close and reopen below.
+      ::close(impl_->cache_fd_);
+      impl_->cache_fd_ = -1;
+    } else {
+      // Connection is alive — clear the buffer and reuse it.
+      // This avoids the socket()/connect()/close() churn that would
+      // otherwise happen on every cache_read() call, reducing syscall
+      // overhead on resource-constrained embedded systems.
+      impl_->cache_read_buffer_.clear();
+      {
+        std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
+        while (!impl_->pre_counted_telegrams_.empty())
+          impl_->pre_counted_telegrams_.pop();
+      }
+      return &impl_->cache_fd_;
+    }
+  }
+
+  // Either no existing connection or the old one was stale — open a new one.
   impl_->cache_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
   if (impl_->cache_fd_ < 0)
     return nullptr;
@@ -474,6 +503,7 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
       // Try to extract a complete message from the cache buffer first (no I/O)
       auto raw_msg = try_extract_message(impl_->cache_read_buffer_);
       if (raw_msg.has_value()) {
+        shrink_if_large(impl_->cache_read_buffer_);
         uint16_t resp_type;
         std::vector<uint8_t> resp_data;
         if (!parse_eibd_message(*raw_msg, resp_type, resp_data)) {
@@ -564,10 +594,16 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
   if (result.has_value())
     return result;
 
-  // Retry once — ensure_cache_connection always opens a fresh connection,
-  // so a second attempt may succeed if the first hit a transient error.
-  bool second_ok = false;
-  return attempt(second_ok);
+  // Only retry if the first attempt failed due to a connection error
+  // (couldn't connect, write failed, poll error, EOF, POLLHUP).
+  // A cache miss (valid response with empty data) is NOT retried —
+  // retrying would just burn another knxd connection for the same
+  // empty result.
+  if (!first_ok) {
+    bool second_ok = false;
+    return attempt(second_ok);
+  }
+  return std::nullopt;
 }
 
 int KnxdClient::get_fd() const {
@@ -703,6 +739,7 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
     while (true) {
       auto raw_msg = try_extract_message(impl_->cache_read_buffer_);
       if (raw_msg.has_value()) {
+        shrink_if_large(impl_->cache_read_buffer_);
         uint16_t resp_type;
         std::vector<uint8_t> resp_data;
         if (!parse_eibd_message(*raw_msg, resp_type, resp_data)) {

@@ -120,10 +120,21 @@ TEST(KnxAddressTest, ToCometvisu) {
 // ---- APDU ----
 
 TEST(ApduTest, BuildWriteOneByte) {
-  auto apdu = build_apdu(ApduType::Write, {0x42});
+  // Value fits in 6 bits (≤ 0x3F): packed into APCI byte.
+  auto apdu = build_apdu(ApduType::Write, {0x2A});
   ASSERT_EQ(apdu.size(), 2);
   EXPECT_EQ(apdu[0], 0x00);
-  EXPECT_EQ(apdu[1], 0x80 | (0x42 & 0x3F));  // Write + packed 6-bit value
+  EXPECT_EQ(apdu[1], 0x80 | 0x2A);  // Write + packed 6-bit value
+}
+
+TEST(ApduTest, BuildWriteOneByteAutoPromote) {
+  // Value exceeds 6 bits (> 0x3F): auto-promoted to multi-byte format
+  // to avoid silent data truncation.
+  auto apdu = build_apdu(ApduType::Write, {0x42});
+  ASSERT_EQ(apdu.size(), 3);
+  EXPECT_EQ(apdu[0], 0x00);
+  EXPECT_EQ(apdu[1], 0x80);  // Write type marker
+  EXPECT_EQ(apdu[2], 0x42);  // Full value preserved
 }
 
 TEST(ApduTest, BuildWriteMultiByte) {
@@ -216,7 +227,7 @@ TEST(EibdWireFormatTest, OpenGroupconWriteOnly) {
   EXPECT_EQ(msg[3], lo(EibMessageType::OPEN_GROUPCON));  // type lo
   EXPECT_EQ(msg[4], 0x00);                               // reserved hi
   EXPECT_EQ(msg[5], 0x00);                               // reserved lo
-  EXPECT_EQ(msg[6], 0xFF);                               // write_only = true
+  EXPECT_EQ(msg[6], 0x01);                               // write_only = true
 }
 
 TEST(EibdWireFormatTest, OpenGroupconReadWrite) {

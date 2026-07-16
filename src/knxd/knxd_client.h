@@ -83,6 +83,11 @@ public:
 
   /// Get the underlying file descriptor for poll()/select() integration.
   /// Returns -1 if not connected.
+  ///
+  /// WARNING: The returned fd is only valid while the calling thread holds
+  /// the appropriate lock. After the lock is released, another thread may
+  /// call disconnect() or reconnect(), invalidating the fd. The caller must
+  /// not use the fd after releasing the lock.
   [[nodiscard]] virtual int get_fd() const = 0;
 
   /// Get the total number of group telegrams received from the knxd bus.

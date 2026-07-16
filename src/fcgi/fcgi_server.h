@@ -16,6 +16,7 @@
 #pragma once
 
 #include <fcgiapp.h>
+#include <semaphore.h>
 
 #include <atomic>
 #include <functional>
@@ -57,6 +58,15 @@ public:
   /// Set the callback for handling requests.
   void set_handler(RequestHandler handler);
 
+  /// Set a shared semaphore for load shedding across forked workers.
+  /// When set, read (long-poll) requests will try to acquire the semaphore
+  /// before blocking. If the semaphore is exhausted (all workers busy),
+  /// the request returns an empty response immediately, allowing write
+  /// requests to be served by workers that finish quickly.
+  /// @param sem Pointer to a sem_t in shared memory (MAP_SHARED). Must be
+  ///            initialized to the number of workers before forking.
+  void set_load_shed_semaphore(sem_t* sem);
+
   /// Open a TCP or Unix socket for direct FCGI connections.
   /// Once opened, the socket is automatically used by run() alongside the
   /// standard FCGI stdin/stdout stream.
@@ -69,6 +79,10 @@ public:
 
   /// Check if a listening socket has been opened.
   [[nodiscard]] bool is_listening() const;
+
+  /// Close the listening socket. Safe to call from the parent process
+  /// after fork() — the children retain their inherited copy.
+  void close_listen_socket();
 
   /// Run the FCGI accept loop (single worker).  Blocks until the server
   /// shuts down or the listen socket is closed.  Each call handles one
@@ -102,8 +116,9 @@ private:
   FCGX_Request request_{};
   std::atomic<bool> shutdown_requested_{false};
   std::vector<std::thread> workers_;
-  int num_workers_ = 0;    // set by run_multithreaded(), used by shutdown()
-  std::mutex fcgi_mutex_;  // serializes libfcgi calls in multithreaded mode
+  int num_workers_ = 0;             // set by run_multithreaded(), used by shutdown()
+  std::mutex fcgi_mutex_;           // serializes libfcgi calls in multithreaded mode
+  sem_t* load_shed_sem_ = nullptr;  // shared semaphore for load shedding
 
   /// Read all FCGI parameters from stdin into an FcgiRequest.
   /// Uses getenv() which reads from the global environ pointer.

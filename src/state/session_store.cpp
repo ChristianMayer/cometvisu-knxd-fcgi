@@ -15,6 +15,9 @@
 
 #include "session_store.h"
 
+#include <unistd.h>
+
+#include <chrono>
 #include <random>
 
 namespace cvknxd {
@@ -92,9 +95,16 @@ void SessionStore::cleanup_expired() {
 }
 
 std::string SessionStore::generate_id() {
-  // Cryptographically secure random session IDs
+  // Seed with multiple entropy sources for embedded systems where
+  // std::random_device may be deterministic (no hardware RNG, low entropy).
+  // Mixing PID (unique per process), high-res time, and random_device
+  // output provides reasonable uniqueness even on constrained platforms.
   static thread_local std::random_device rd;
-  static thread_local std::mt19937_64 gen(rd());
+  static thread_local std::seed_seq seed{
+      static_cast<unsigned>(rd()), static_cast<unsigned>(::getpid()),
+      static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count()),
+      static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count() >> 32)};
+  static thread_local std::mt19937_64 gen(seed);
   static thread_local std::uniform_int_distribution<uint64_t> dist;
 
   uint64_t num = dist(gen);

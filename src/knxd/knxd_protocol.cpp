@@ -122,9 +122,17 @@ std::vector<uint8_t> build_apdu(ApduType type, const std::vector<uint8_t>& data)
   if (data.empty()) {
     // Read request: just the type marker
     result.push_back(static_cast<uint8_t>(type));
+  } else if (data.size() == 1 && (data[0] & ~0x3F) == 0) {
+    // Single-byte value fitting in 6 bits: pack into APDU byte 1.
+    // KNX standard: lower 6 bits of APCI byte carry the value for
+    // 1-byte DPTs. Values > 0x3F fall through to multi-byte format.
+    result.push_back(static_cast<uint8_t>(type) | data[0]);
   } else if (data.size() == 1) {
-    // Single-byte value: pack into APDU byte 1
-    result.push_back(static_cast<uint8_t>(type) | (data[0] & 0x3F));
+    // Single-byte value exceeding 6 bits: auto-promote to multi-byte
+    // format so the full value is preserved.  Without this, the value
+    // would be silently truncated to 6 bits, causing data corruption.
+    result.push_back(static_cast<uint8_t>(type));
+    result.insert(result.end(), data.begin(), data.end());
   } else {
     // Multi-byte value: type marker in byte 1, data follows
     result.push_back(static_cast<uint8_t>(type));
@@ -223,7 +231,8 @@ std::optional<std::vector<uint8_t>> try_extract_message(std::vector<uint8_t>& bu
 std::vector<uint8_t> build_open_groupcon(bool write_only) {
   // knxd >= 0.14 expects a 5-byte payload for all EIB_OPEN_* types:
   // [type:2][reserved/addr:2][write_only:1]
-  uint8_t wo_byte = write_only ? 0xFF : 0x00;
+  // Use 0x01 for write-only (standard eibd sentinel), 0x00 for read-write.
+  uint8_t wo_byte = write_only ? 0x01 : 0x00;
   return build_eibd_message(EIB_OPEN_GROUPCON, {0x00, 0x00, wo_byte});
 }
 

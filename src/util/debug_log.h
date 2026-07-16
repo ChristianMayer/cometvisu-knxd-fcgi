@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstddef>
+#include <ostream>
 #include <string>
 #include <string_view>
 
@@ -77,12 +78,12 @@ private:
   static size_t max_uri_length_;
   static size_t max_body_length_;
 
-  /// Write a timestamp prefix to stderr.
-  static void write_timestamp();
+  /// Write a timestamp prefix to the given output stream.
+  static void write_timestamp(std::ostream& os);
 
-  /// Write a possibly-truncated string to stderr.
+  /// Write a possibly-truncated string to the given output stream.
   /// Returns true if truncation occurred.
-  static bool write_truncated(std::string_view text, size_t max_len);
+  static bool write_truncated(std::ostream& os, std::string_view text, size_t max_len);
 };
 
 }  // namespace cvknxd
