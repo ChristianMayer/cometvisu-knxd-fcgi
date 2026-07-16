@@ -15,6 +15,7 @@
 
 #include "login_handler.h"
 
+#include <array>
 #include <cstdio>
 
 #include "state/session_store.h"
@@ -34,14 +35,16 @@ LoginHandler::LoginHandler(SessionStore& sessions, std::string base_url)
 std::string LoginHandler::query_knxd_version() {
   // Run `knxd --version` and return its raw output (trimmed).
   // knxd may print version info to stderr, so merge both streams.
-  FILE* pipe = popen("knxd --version 2>&1", "r");
-  if (!pipe)
+  // NOLINTNEXTLINE(cert-env33-c)
+  FILE* pipe = popen("knxd --version 2>&1", "r");  // NOLINT(cert-env33-c)
+  if (pipe == nullptr) {
     return "";
+  }
 
-  char buf[256];
+  std::array<char, 256> buf{};
   std::string output;
-  while (std::fgets(buf, sizeof(buf), pipe) != nullptr) {
-    output += buf;
+  while (std::fgets(buf.data(), buf.size(), pipe) != nullptr) {
+    output += buf.data();
   }
   pclose(pipe);
 
@@ -70,20 +73,25 @@ std::string LoginHandler::handle(std::string_view query_string) {
   const std::string_view knxd_bver = knxd_build_version();
   const std::string_view knxd_bhash = knxd_build_git_hash();
 
-  if (!fcgi_ver.empty() && fcgi_ver != "unknown")
+  if (!fcgi_ver.empty() && fcgi_ver != "unknown") {
     need_config = true;
-  if (!fcgi_hash.empty() && fcgi_hash != "unknown")
+  }
+  if (!fcgi_hash.empty() && fcgi_hash != "unknown") {
     need_config = true;
-  if (!knxd_bver.empty())
+  }
+  if (!knxd_bver.empty()) {
     need_config = true;
-  if (!knxd_bhash.empty())
+  }
+  if (!knxd_bhash.empty()) {
     need_config = true;
+  }
 
   if (cached_knxd_runtime_.empty()) {
     cached_knxd_runtime_ = query_knxd_version();
   }
-  if (!cached_knxd_runtime_.empty())
+  if (!cached_knxd_runtime_.empty()) {
     need_config = true;
+  }
 
   if (need_config) {
     json.add_key("c");

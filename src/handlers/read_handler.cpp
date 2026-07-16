@@ -181,8 +181,9 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - tstart)
             .count();
     const int remaining = timeout_sec - static_cast<int>(elapsed);
-    if (remaining <= 0)
+    if (remaining <= 0) {
       break;
+    }
 
     // Use cache_last_updates_2 for position-based polling.
     // This is the equivalent of the original EIB_Cache_LastUpdates().
@@ -232,10 +233,12 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     // Process all changed addresses
     for (const auto changed_addr : updates->changed_addresses) {
       // Only include subscribed addresses, and deduplicate
-      if (!eib_addrs.contains(changed_addr))
+      if (!eib_addrs.contains(changed_addr)) {
         continue;
-      if (already_written.contains(changed_addr))
+      }
+      if (already_written.contains(changed_addr)) {
         continue;
+      }
 
       // Read the current value from cache (cache_read filters out Read APDUs)
       const auto data = knxd_.cache_read(changed_addr, true);  // nowait
@@ -246,8 +249,9 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
       }
     }
 
-    if (written)
+    if (written) {
       break;
+    }
 
     // Guard against busy-loop: if no progress was made (position didn't
     // advance and no changes found), knxd's internal timeout (~1s) expired

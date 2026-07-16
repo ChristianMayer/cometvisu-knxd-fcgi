@@ -13,7 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#pragma once
+#ifndef COMETVISU_KNXD_FCGI_KNXD_PROTOCOL_H_
+#define COMETVISU_KNXD_FCGI_KNXD_PROTOCOL_H_
 
 #include <eibtypes.h>
 
@@ -164,7 +165,7 @@ struct LastUpdatesResult {
   /// Group addresses that changed since the start position.
   std::vector<uint16_t> changed_addresses;
   /// New end position (pass this as "start" in the next call).
-  uint32_t new_position;
+  uint32_t new_position = 0;
 };
 
 /// Parse an EIB_CACHE_LAST_UPDATES_2 response.
@@ -184,7 +185,7 @@ struct LastUpdatesResult {
 
 /// Maximum size of the internal read buffer in bytes (1 MB).
 /// Prevents unbounded memory growth from unconsumed telegrams.
-inline constexpr size_t kMaxReadBufferSize = 1 * 1024 * 1024;
+inline constexpr size_t kMaxReadBufferSize = 1048576;
 
 /// Try to extract a complete eibd message from an accumulated read buffer.
 /// If a complete message is found (based on the 2-byte length prefix),
@@ -195,3 +196,5 @@ inline constexpr size_t kMaxReadBufferSize = 1 * 1024 * 1024;
 [[nodiscard]] std::optional<std::vector<uint8_t>> try_extract_message(std::vector<uint8_t>& buffer);
 
 }  // namespace cvknxd
+
+#endif  // COMETVISU_KNXD_FCGI_KNXD_PROTOCOL_H_

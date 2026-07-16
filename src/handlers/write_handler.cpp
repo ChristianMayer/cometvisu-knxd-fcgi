@@ -57,7 +57,7 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
   // The reference eibwrite-cgi.c expects the hex value "v" to include the APCI byte
   // (e.g. "v=800c6f" for a 2-byte value 0x0c6f). We prepend only the leading 0x00
   // to form the complete APDU: [0x00, APCI, value_bytes...].
-  if (hex_data.empty() || (hex_data[0] & 0x80) != 0x80) {
+  if (hex_data.empty() || (hex_data.front() & 0x80) != 0x80) {
     // Only A_GroupValue_Write is allowed (matching reference check).
     return result;
   }
@@ -72,8 +72,9 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
   bool any_valid = false;
   for (auto addr_str : addresses) {
     auto parsed = KnxAddress::from_cometvisu(addr_str);
-    if (!parsed)
+    if (!parsed) {
       continue;
+    }
 
     any_valid = true;
     const uint16_t eibaddr = parsed->group.to_eibaddr();

@@ -13,7 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#pragma once
+#ifndef COMETVISU_KNXD_FCGI_READ_HANDLER_H_
+#define COMETVISU_KNXD_FCGI_READ_HANDLER_H_
 
 #include <cstdint>
 #include <optional>
@@ -43,6 +44,8 @@ class ReadHandler {
 public:
   ReadHandler(KnxdClientInterface& knxd, SessionStore& sessions, int longpoll_timeout_sec = 300);
 
+  ~ReadHandler() = default;
+
   // Reference members prevent copy/move.
   ReadHandler(const ReadHandler&) = delete;
   ReadHandler& operator=(const ReadHandler&) = delete;
@@ -63,3 +66,5 @@ private:
 };
 
 }  // namespace cvknxd
+
+#endif  // COMETVISU_KNXD_FCGI_READ_HANDLER_H_

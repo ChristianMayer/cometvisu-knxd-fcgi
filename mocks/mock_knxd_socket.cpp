@@ -34,8 +34,9 @@ void MockKnxdClient::disconnect() {
 }
 
 bool MockKnxdClient::reconnect() {
-  if (last_socket_path_.empty())
+  if (last_socket_path_.empty()) {
     return false;  // never connected
+  }
   connected_ = connection_success_;
   group_socket_open_ = false;  // caller must re-open group socket
   return connected_;
@@ -46,23 +47,26 @@ bool MockKnxdClient::is_connected() const {
 }
 
 bool MockKnxdClient::open_group_socket(bool /*write_only*/) {
-  if (!connected_)
+  if (!connected_) {
     return false;
+  }
   group_socket_open_ = connection_success_;
   return group_socket_open_;
 }
 
 bool MockKnxdClient::send_group_packet(uint16_t group_addr, const std::vector<uint8_t>& apdu) {
-  if (!connected_ || !group_socket_open_)
+  if (!connected_ || !group_socket_open_) {
     return false;
+  }
   sent_packets_.push_back({.group_addr = group_addr, .apdu = apdu});
   return true;
 }
 
 std::optional<std::vector<uint8_t>> MockKnxdClient::cache_read(uint16_t group_addr,
                                                                bool /*nowait*/) {
-  if (!connected_)
+  if (!connected_) {
     return std::nullopt;
+  }
   if (cache_read_fail_count_ > 0) {
     cache_read_fail_count_--;
     connected_ = false;
@@ -79,8 +83,9 @@ std::optional<LastUpdatesResult> MockKnxdClient::cache_last_updates_2(uint32_t s
                                                                       int /*timeout_sec*/) {
   cache_last_updates_call_count_++;
 
-  if (!connected_)
+  if (!connected_) {
     return std::nullopt;
+  }
 
   // Simulate connection failures for testing reconnection resilience.
   // Set connected_=false so the handler can detect the failure via is_connected()
@@ -93,8 +98,9 @@ std::optional<LastUpdatesResult> MockKnxdClient::cache_last_updates_2(uint32_t s
 
   // Return the first queued result that matches the start position,
   // or the first result if no specific matching is configured.
-  if (last_updates_queue_.empty())
+  if (last_updates_queue_.empty()) {
     return std::nullopt;
+  }
 
   auto state = last_updates_queue_.front();
   last_updates_queue_.pop();
@@ -115,8 +121,9 @@ std::optional<LastUpdatesResult> MockKnxdClient::cache_last_updates_2(uint32_t s
 }
 
 bool MockKnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8_t>& out_apdu) {
-  if (telegram_queue_.empty())
+  if (telegram_queue_.empty()) {
     return false;
+  }
   auto& front = telegram_queue_.front();
   out_group_addr = front.first;
   out_apdu = front.second;
@@ -151,12 +158,14 @@ void MockKnxdClient::reset() {
   connection_success_ = true;
   last_socket_path_.clear();
   cached_values_.clear();
-  while (!telegram_queue_.empty())
+  while (!telegram_queue_.empty()) {
     telegram_queue_.pop();
+  }
   sent_packets_.clear();
   telegram_count_ = 0;
-  while (!last_updates_queue_.empty())
+  while (!last_updates_queue_.empty()) {
     last_updates_queue_.pop();
+  }
   cache_updates_fail_count_ = 0;
   cache_read_fail_count_ = 0;
   cache_last_updates_call_count_ = 0;

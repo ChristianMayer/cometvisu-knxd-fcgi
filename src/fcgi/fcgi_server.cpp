@@ -193,8 +193,9 @@ void FcgiServer::shutdown() {
       const int wakeups = (num_workers_ > 0) ? num_workers_ : 64;
       for (int i = 0; i < wakeups; ++i) {
         const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
-        if (fd < 0)
+        if (fd < 0) {
           break;
+        }
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         const int ret = ::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), addr_len);
         if (ret == 0 || errno == EINPROGRESS) {
@@ -337,18 +338,20 @@ FcgiRequest FcgiServer::read_request() {
                   << kMaxContentLength << ", truncating\n";
         content_length = kMaxContentLength;
       }
-      req.content.resize(static_cast<size_t>(content_length));
+      const auto max_len = static_cast<size_t>(content_length);
+      req.content.resize(max_len);
       // Read from FCGI stdin
-      const size_t max_len = static_cast<size_t>(content_length);
       size_t total = 0;
       while (total < max_len) {
         const size_t remaining = max_len - total;
-        if (remaining == 0)
+        if (remaining == 0) {
           break;
+        }
         // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
         const size_t nread = FCGI_fread(req.content.data() + total, 1, remaining, stdin);
-        if (nread == 0)
+        if (nread == 0) {
           break;
+        }
         total += nread;
       }
       // Shrink to actual bytes read (in case of early EOF)
@@ -370,8 +373,9 @@ FcgiRequest FcgiServer::read_request(char** envp) {
   // Each entry is "KEY=VALUE". Returns pointer to VALUE part, or nullptr.
   // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   auto get_env = [](char** env_array, const char* name) -> const char* {
-    if (env_array == nullptr || name == nullptr)
+    if (env_array == nullptr || name == nullptr) {
       return nullptr;
+    }
     const size_t name_len = std::strlen(name);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     for (const char* const* e = const_cast<const char* const*>(env_array); *e != nullptr; ++e) {
@@ -414,17 +418,19 @@ FcgiRequest FcgiServer::read_request(char** envp) {
                   << kMaxContentLength << ", truncating\n";
         content_length = kMaxContentLength;
       }
-      const size_t max_len = static_cast<size_t>(content_length);
+      const auto max_len = static_cast<size_t>(content_length);
       req.content.resize(max_len);
       size_t total = 0;
       while (total < max_len) {
         const size_t remaining = max_len - total;
-        if (remaining == 0)
+        if (remaining == 0) {
           break;
+        }
         // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
         const size_t nread = FCGI_fread(req.content.data() + total, 1, remaining, stdin);
-        if (nread == 0)
+        if (nread == 0) {
           break;
+        }
         total += nread;
       }
       req.content.resize(total);

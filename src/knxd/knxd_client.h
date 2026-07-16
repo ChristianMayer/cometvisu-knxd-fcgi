@@ -13,7 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#pragma once
+#ifndef COMETVISU_KNXD_FCGI_KNXD_CLIENT_H_
+#define COMETVISU_KNXD_FCGI_KNXD_CLIENT_H_
 
 #include <cstdint>
 #include <memory>
@@ -141,3 +142,5 @@ private:
 };
 
 }  // namespace cvknxd
+
+#endif  // COMETVISU_KNXD_FCGI_KNXD_CLIENT_H_

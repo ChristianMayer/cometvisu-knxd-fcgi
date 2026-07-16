@@ -25,37 +25,50 @@ namespace cvknxd {
 
 std::optional<KnxGroupAddress> KnxGroupAddress::from_string(std::string_view str) {
   KnxGroupAddress addr;
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   const char* p = str.data();
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   const char* end = str.data() + str.size();
 
   auto parse_part = [&](uint8_t& out, int max_val) -> bool {
-    if (p >= end || *p < '0' || *p > '9')
+    if (p >= end || *p < '0' || *p > '9') {
       return false;
+    }
     int val = 0;
     while (p < end && *p >= '0' && *p <= '9') {
-      val = val * 10 + (*p - '0');
-      if (val > max_val)
+      val = (val * 10) + (*p - '0');
+      if (val > max_val) {
         return false;
+      }
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
       ++p;
     }
     out = static_cast<uint8_t>(val);
     return true;
   };
 
-  if (!parse_part(addr.main, 31))
+  if (!parse_part(addr.main, 31)) {
     return std::nullopt;
-  if (p >= end || *p != '/')
+  }
+  if (p >= end || *p != '/') {
     return std::nullopt;
+  }
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   ++p;
-  if (!parse_part(addr.middle, 7))
+  if (!parse_part(addr.middle, 7)) {
     return std::nullopt;
-  if (p >= end || *p != '/')
+  }
+  if (p >= end || *p != '/') {
     return std::nullopt;
+  }
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   ++p;
-  if (!parse_part(addr.sub, 255))
+  if (!parse_part(addr.sub, 255)) {
     return std::nullopt;
-  if (p != end)
+  }
+  if (p != end) {
     return std::nullopt;  // trailing garbage
+  }
 
   return addr;
 }
@@ -70,9 +83,9 @@ uint16_t KnxGroupAddress::to_eibaddr() const {
 }
 
 KnxGroupAddress KnxGroupAddress::from_eibaddr(uint16_t addr) {
-  return KnxGroupAddress{static_cast<uint8_t>((addr >> 11) & 0x1F),
-                         static_cast<uint8_t>((addr >> 8) & 0x07),
-                         static_cast<uint8_t>(addr & 0xFF)};
+  return KnxGroupAddress{.main = static_cast<uint8_t>((addr >> 11) & 0x1F),
+                         .middle = static_cast<uint8_t>((addr >> 8) & 0x07),
+                         .sub = static_cast<uint8_t>(addr & 0xFF)};
 }
 
 // ---- KnxAddress ----
@@ -84,16 +97,18 @@ std::optional<KnxAddress> KnxAddress::from_cometvisu(std::string_view str) {
   if (colon == std::string_view::npos) {
     // No namespace: use the configured default namespace (empty by default).
     auto group = KnxGroupAddress::from_string(str);
-    if (!group)
+    if (!group) {
       return std::nullopt;
-    return KnxAddress{default_namespace_, *group};
+    }
+    return KnxAddress{.ns = default_namespace_, .group = *group};
   }
 
   KnxAddress result;
   result.ns = std::string{str.substr(0, colon)};
   auto group = KnxGroupAddress::from_string(str.substr(colon + 1));
-  if (!group)
+  if (!group) {
     return std::nullopt;
+  }
   result.group = *group;
   return result;
 }
@@ -123,17 +138,16 @@ std::vector<uint8_t> build_apdu(ApduType type, const std::vector<uint8_t>& data)
   if (data.empty()) {
     // Read request: just the type marker
     result.push_back(static_cast<uint8_t>(type));
-  } else if (data.size() == 1 && (data[0] & ~0x3F) == 0) {
-    // Single-byte value fitting in 6 bits: pack into APDU byte 1.
-    // KNX standard: lower 6 bits of APCI byte carry the value for
-    // 1-byte DPTs. Values > 0x3F fall through to multi-byte format.
-    result.push_back(static_cast<uint8_t>(type) | data[0]);
   } else if (data.size() == 1) {
-    // Single-byte value exceeding 6 bits: auto-promote to multi-byte
-    // format so the full value is preserved.  Without this, the value
-    // would be silently truncated to 6 bits, causing data corruption.
-    result.push_back(static_cast<uint8_t>(type));
-    result.insert(result.end(), data.begin(), data.end());
+    if ((data.front() & ~0x3F) == 0) {
+      // Single-byte value fitting in 6 bits: pack into APDU byte 1.
+      result.push_back(static_cast<uint8_t>(type) | data.front());
+    } else {
+      // Single-byte value exceeding 6 bits: auto-promote to multi-byte
+      // format so the full value is preserved.
+      result.push_back(static_cast<uint8_t>(type));
+      result.insert(result.end(), data.begin(), data.end());
+    }
   } else {
     // Multi-byte value: type marker in byte 1, data follows
     result.push_back(static_cast<uint8_t>(type));
@@ -145,10 +159,11 @@ std::vector<uint8_t> build_apdu(ApduType type, const std::vector<uint8_t>& data)
 
 bool parse_apdu(const std::vector<uint8_t>& apdu, ApduType& out_type,
                 std::vector<uint8_t>& out_data) {
-  if (apdu.size() < 2)
+  if (apdu.size() < 2) {
     return false;
+  }
 
-  out_type = static_cast<ApduType>(apdu[1] & 0xC0);
+  out_type = static_cast<ApduType>(apdu.at(1) & 0xC0);
   out_data.clear();
 
   switch (out_type) {
@@ -161,7 +176,7 @@ bool parse_apdu(const std::vector<uint8_t>& apdu, ApduType& out_type,
         // Single byte value packed in lower 6 bits of byte 1.
         // Note: This limits single-byte values to 0x00–0x3F (6 bits).
         // For values > 0x3F, use multi-byte format with data in bytes 2+.
-        out_data.push_back(apdu[1] & 0x3F);
+        out_data.push_back(apdu.at(1) & 0x3F);
       } else {
         // Multi-byte value: type marker is in byte 1,
         // all data bytes follow starting at byte 2.
@@ -177,7 +192,7 @@ bool parse_apdu(const std::vector<uint8_t>& apdu, ApduType& out_type,
 
 std::vector<uint8_t> build_eibd_message(uint16_t type, const std::vector<uint8_t>& data) {
   // Payload: [type_hi, type_lo] + [data...]
-  size_t payload_size = 2 + data.size();
+  const size_t payload_size = 2 + data.size();
   std::vector<uint8_t> result;
   result.reserve(2 + payload_size);
 
@@ -197,29 +212,33 @@ std::vector<uint8_t> build_eibd_message(uint16_t type, const std::vector<uint8_t
 
 bool parse_eibd_message(const std::vector<uint8_t>& raw, uint16_t& out_type,
                         std::vector<uint8_t>& out_data) {
-  if (raw.size() < 4)
+  if (raw.size() < 4) {
     return false;  // need length(2) + type(2) minimum
+  }
 
   // Verify length
-  uint16_t payload_len = static_cast<uint16_t>((raw[0] << 8) | raw[1]);
-  if (raw.size() < static_cast<size_t>(payload_len) + 2)
+  const auto payload_len = static_cast<uint16_t>((raw.at(0) << 8) | raw.at(1));
+  if (raw.size() < static_cast<size_t>(payload_len) + 2) {
     return false;
+  }
 
-  out_type = static_cast<uint16_t>((raw[2] << 8) | raw[3]);
+  out_type = static_cast<uint16_t>((raw.at(2) << 8) | raw.at(3));
   out_data.assign(raw.begin() + 4, raw.begin() + 2 + payload_len);
 
   return true;
 }
 
 std::optional<std::vector<uint8_t>> try_extract_message(std::vector<uint8_t>& buffer) {
-  if (buffer.size() < 2)
+  if (buffer.size() < 2) {
     return std::nullopt;  // need at least the 2-byte length header
+  }
 
-  uint16_t payload_len = static_cast<uint16_t>((buffer[0] << 8) | buffer[1]);
-  size_t total_needed = 2 + static_cast<size_t>(payload_len);
+  const auto payload_len = static_cast<uint16_t>((buffer.at(0) << 8) | buffer.at(1));
+  const size_t total_needed = 2 + static_cast<size_t>(payload_len);
 
-  if (buffer.size() < total_needed)
+  if (buffer.size() < total_needed) {
     return std::nullopt;  // incomplete message — need more data
+  }
 
   // Extract complete message
   std::vector<uint8_t> msg(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(total_needed));
@@ -233,7 +252,7 @@ std::vector<uint8_t> build_open_groupcon(bool write_only) {
   // knxd >= 0.14 expects a 5-byte payload for all EIB_OPEN_* types:
   // [type:2][reserved/addr:2][write_only:1]
   // Use 0x01 for write-only (standard eibd sentinel), 0x00 for read-write.
-  uint8_t wo_byte = write_only ? 0x01 : 0x00;
+  const uint8_t wo_byte = write_only ? 0x01 : 0x00;
   return build_eibd_message(EIB_OPEN_GROUPCON, {0x00, 0x00, wo_byte});
 }
 
@@ -275,21 +294,25 @@ std::vector<uint8_t> build_cache_last_updates_2(uint32_t start, int timeout_sec)
 std::optional<LastUpdatesResult> parse_cache_last_updates_2_response(
     const std::vector<uint8_t>& data) {
   // Response payload: [end:4][addrs:N*2]
-  if (data.size() < 4)
+  if (data.size() < 4) {
     return std::nullopt;
+  }
 
   LastUpdatesResult result;
-  result.new_position = (static_cast<uint32_t>(data[0]) << 24) |
-                        (static_cast<uint32_t>(data[1]) << 16) |
-                        (static_cast<uint32_t>(data[2]) << 8) | static_cast<uint32_t>(data[3]);
+  result.new_position = (static_cast<uint32_t>(data.at(0)) << 24) |
+                        (static_cast<uint32_t>(data.at(1)) << 16) |
+                        (static_cast<uint32_t>(data.at(2)) << 8) |
+                        static_cast<uint32_t>(data.at(3));
 
   // Remaining bytes are pairs of group addresses
-  size_t remaining = data.size() - 4;
-  if (remaining % 2 != 0)
+  const size_t remaining = data.size() - 4;
+  if (remaining % 2 != 0) {
     return std::nullopt;  // must be even number of bytes
+  }
 
   for (size_t i = 4; i < data.size(); i += 2) {
-    uint16_t addr = (static_cast<uint16_t>(data[i]) << 8) | static_cast<uint16_t>(data[i + 1]);
+    const auto addr =
+        static_cast<uint16_t>((data.at(i) << 8) | static_cast<uint16_t>(data.at(i + 1)));
     result.changed_addresses.push_back(addr);
   }
 

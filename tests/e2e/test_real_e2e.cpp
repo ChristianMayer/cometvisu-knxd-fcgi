@@ -44,6 +44,7 @@ using namespace cvknxd;
 ///
 /// Note: knxd does NOT cache T_Group injections, so cache_read always
 /// returns empty (404). COMET/long-poll receives injected telegrams live.
+// NOLINTNEXTLINE(misc-use-anonymous-namespace)
 class RealKnxdE2ETest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -89,8 +90,9 @@ protected:
 
   static std::string sid(const std::string& json) {
     auto s = json.find(R"("s":")");
-    if (s == std::string::npos)
+    if (s == std::string::npos) {
       return "";
+    }
     s += 5;
     auto e = json.find('"', s);
     return (e == std::string::npos) ? "" : json.substr(s, e - s);
@@ -99,6 +101,7 @@ protected:
   void inject(int sub, int value) {
     const std::string cmd = "knxtool groupswrite local:" + knxd_socket_path_ + " " + k(sub) + " " +
                             std::to_string(value) + " 2>/dev/null";
+    // NOLINTNEXTLINE(cert-env33-c)
     // NOLINTNEXTLINE(cert-env33-c)
     [[maybe_unused]] const int _ = std::system(cmd.c_str());
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -110,12 +113,15 @@ protected:
     return buf.data();
   }
 
+  // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
   std::string knxd_socket_path_;
   KnxdClient knxd_;
   SessionStore sessions_;
   uint16_t base_ = 0x1000;
+  // NOLINTEND(misc-non-private-member-variables-in-classes)
 };
 
+// NOLINTBEGIN(cert-err58-cpp, misc-use-anonymous-namespace)
 // ---- Login ----
 
 TEST_F(RealKnxdE2ETest, LoginAnonymous) {
@@ -137,7 +143,7 @@ TEST_F(RealKnxdE2ETest, LoginCreatesValidSession) {
   Router router(knxd_, sessions_);
   auto resp = router.route(req("POST", "/l", "u=user&p=pass"));
   EXPECT_EQ(resp.status_code, 200);
-  std::string s = sid(resp.body);
+  const std::string s = sid(resp.body);
   ASSERT_FALSE(s.empty());
   EXPECT_NE(s, "0");
   EXPECT_TRUE(sessions_.is_valid(s));
@@ -294,7 +300,7 @@ TEST_F(RealKnxdE2ETest, ValidSessionAllowsWrite) {
   Router router(knxd_, sessions_);
   auto lr = router.route(req("POST", "/l", "u=user&p=pass"));
   EXPECT_EQ(lr.status_code, 200);
-  std::string s = sid(lr.body);
+  const std::string s = sid(lr.body);
   ASSERT_FALSE(s.empty());
 
   EXPECT_EQ(router.route(req("GET", "/w", "a=" + a(14) + "&v=807e&s=" + s)).status_code, 200);
@@ -318,3 +324,4 @@ TEST_F(RealKnxdE2ETest, ReadInvalidTimeoutReturns400) {
   Router router(knxd_, sessions_);
   EXPECT_EQ(router.route(req("GET", "/r", "a=" + a(16) + "&t=abc")).status_code, 400);
 }
+// NOLINTEND(cert-err58-cpp, misc-use-anonymous-namespace)

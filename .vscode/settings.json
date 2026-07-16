@@ -12,7 +12,12 @@
   "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
   "C_Cpp.clang_format_style": "file",
   "C_Cpp.codeAnalysis.clangTidy.enabled": true,
-  "C_Cpp.codeAnalysis.clangTidy.useBuildPath": "${workspaceFolder}/build",
+  "C_Cpp.codeAnalysis.clangTidy.configFile": "${workspaceFolder}/.clang-tidy",
+  "C_Cpp.codeAnalysis.clangTidy.useBuildPath": true,
+  "C_Cpp.codeAnalysis.clangTidy.checksDisabled": [
+    "modernize-use-include-guards",
+    "readability-braces-around-statements"
+  ],
   // ---- Editor settings ----
   "editor.formatOnSave": true,
   "editor.rulers": [

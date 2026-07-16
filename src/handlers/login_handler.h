@@ -13,7 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#pragma once
+#ifndef COMETVISU_KNXD_FCGI_LOGIN_HANDLER_H_
+#define COMETVISU_KNXD_FCGI_LOGIN_HANDLER_H_
 
 #include <string>
 #include <string_view>
@@ -29,6 +30,8 @@ public:
   /// @param base_url   Base URL prefix advertised in login response "c" block
   ///                   (e.g. "/proxy/visu"). Empty = omit "c" block entirely.
   explicit LoginHandler(SessionStore& sessions, std::string base_url = "");
+
+  ~LoginHandler() = default;
 
   // Reference/const members prevent copy/move.
   LoginHandler(const LoginHandler&) = delete;
@@ -54,3 +57,5 @@ private:
 };
 
 }  // namespace cvknxd
+
+#endif  // COMETVISU_KNXD_FCGI_LOGIN_HANDLER_H_
