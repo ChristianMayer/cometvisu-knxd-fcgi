@@ -70,6 +70,7 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
 
   // Write to each address
   bool any_valid = false;
+  bool any_failed = false;
   for (auto addr_str : addresses) {
     auto parsed = KnxAddress::from_cometvisu(addr_str);
     if (!parsed) {
@@ -78,12 +79,21 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
 
     any_valid = true;
     const uint16_t eibaddr = parsed->group.to_eibaddr();
-    knxd_.send_group_packet(eibaddr, apdu);
+    if (!knxd_.send_group_packet(eibaddr, apdu)) {
+      any_failed = true;
+    }
   }
 
   // 404 only when all addresses had an invalid format.
   if (!any_valid && !addresses.empty()) {
     result.http_status = 404;
+  }
+
+  // If all valid writes failed, report an error so the client knows the write
+  // didn't reach the bus. Previously the return value of send_group_packet was
+  // silently ignored, so clients got HTTP 200 even when the write never went out.
+  if (any_valid && any_failed) {
+    result.http_status = 503;
   }
 
   return result;
