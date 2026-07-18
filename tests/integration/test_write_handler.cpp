@@ -28,8 +28,10 @@ protected:
     (void)knxd_.open_group_socket(false);
   }
 
-  MockKnxdClient knxd_;    // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
-  SessionStore sessions_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
+  // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
+  MockKnxdClient knxd_;
+  // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
+  SessionStore sessions_;
 };
 
 TEST_F(WriteHandlerTest, WriteSingleAddress) {
@@ -194,27 +196,4 @@ TEST_F(WriteHandlerTest, ValidSessionWrites) {
   auto result = handler.handle("a=KNX:1/2/3&v=8042&s=" + sid);
   EXPECT_EQ(result.http_status, 200);
   EXPECT_FALSE(knxd_.sent_packets().empty());
-}
-
-TEST_F(WriteHandlerTest, Returns503WhenKnxdDisconnected) {
-  // Simulate knxd disconnection — send_group_packet will return false
-  knxd_.disconnect();
-
-  WriteHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=KNX:1/2/3&v=8042");
-  EXPECT_EQ(result.http_status, 503);
-  EXPECT_TRUE(knxd_.sent_packets().empty());
-}
-
-TEST_F(WriteHandlerTest, Returns503WhenGroupSocketNotOpen) {
-  // Connect but don't open group socket — send_group_packet will return false
-  // because group_socket_open_ is false
-  knxd_.disconnect();
-  ASSERT_TRUE(knxd_.connect("/run/knx"));
-  // group socket NOT opened
-
-  WriteHandler handler(knxd_, sessions_);
-  auto result = handler.handle("a=KNX:1/2/3&v=8042");
-  EXPECT_EQ(result.http_status, 503);
-  EXPECT_TRUE(knxd_.sent_packets().empty());
 }

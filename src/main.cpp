@@ -21,7 +21,6 @@
 #include <unistd.h>
 
 #include <cerrno>
-#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -127,13 +126,6 @@ int parse_env_int(const char* name, int default_val, int min_val, int max_val) {
 int main(int argc, char* argv[]) {
   using namespace cvknxd;
 
-  // Make stdout and stderr unbuffered. In a fork-based program, block-buffered
-  // streams cause duplicate log output because every child inherits a copy of
-  // the parent's unflushed buffer. When any process flushes, inherited messages
-  // are printed again. Unbuffered mode prevents this entirely.
-  ::setvbuf(stdout, nullptr, _IONBF, 0);
-  ::setvbuf(stderr, nullptr, _IONBF, 0);
-
   // Handle command-line flags when invoked directly (e.g., for version queries).
   // FastCGI binaries can be run from a terminal for introspection without
   // needing a running web server.
@@ -238,6 +230,10 @@ int main(int argc, char* argv[]) {
             << (*address_prefix != '\0' ? address_prefix : "(not set)") << "\n";
   std::cout << "[INFO]   BASE_URL              "
             << (base_url != nullptr && *base_url != '\0' ? base_url : "(not set)") << "\n";
+  std::cout << "[INFO]   LOGIN_EXTRA_CONFIG    "
+            << (getenv("LOGIN_EXTRA_CONFIG") != nullptr ? getenv("LOGIN_EXTRA_CONFIG")
+                                                        : "(not set)")
+            << "\n";
   std::cout << "[INFO]   DEBUG_BACKEND         "
             << (getenv("DEBUG_BACKEND") != nullptr ? getenv("DEBUG_BACKEND") : "(not set)") << "\n";
 
@@ -255,12 +251,25 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // ---- Create knxd client (lazy — children connect their own) ----
-  // The parent process does NOT pre-connect to knxd.  Each child opens
-  // its own connection after fork.  Pre-connecting in the parent would
-  // waste a knxd connection slot (knxd limits connections via -E flag),
-  // and the parent never handles FCGI requests anyway.
+  // ---- Connect to knxd with retry ----
+  // First-time connection (has_worked_before=false): retry after 500ms, 1s, 2s.
+  // If the connection was previously successful (reconnect), extended retries
+  // at 4s and 8s are also attempted.
   KnxdClient knxd;
+  if (!connect_knxd_with_retry(knxd, knxd_socket, false)) {
+    std::cerr << "[ERROR] Cannot connect to knxd at " << knxd_socket << " after all retries\n";
+    return 1;
+  }
+
+  // Open group socket for sending and receiving
+  if (!knxd.open_group_socket(false)) {
+    std::cerr << "[ERROR] Cannot open group socket on knxd\n";
+    knxd.disconnect();
+    return 1;
+  }
+
+  // Set non-blocking mode for efficient poll()-based long-poll
+  knxd.set_nonblocking(true);
 
   SessionStore sessions;
 
@@ -350,13 +359,6 @@ int main(int argc, char* argv[]) {
         // opens its own to avoid contention on the shared fd.
         knxd.disconnect();
 
-        // Staggered startup: each worker waits i*100ms before its first
-        // connection attempt.  This spreads the connection attempts across
-        // (num_workers * 100)ms so workers don't all hit knxd at once.
-        // Without this, all children would try to connect simultaneously
-        // after fork, overwhelming knxd's connection limit.
-        ::usleep(static_cast<useconds_t>(i) * 100 * 1000);
-
         // The parent successfully connected to knxd, so use extended retry delays
         // (500ms, 1s, 2s, 4s, 8s) in case knxd is temporarily unavailable.
         if (!connect_knxd_with_retry(knxd, knxd_socket, true)) {
@@ -389,8 +391,9 @@ int main(int argc, char* argv[]) {
 
     // ---- Parent: close inherited resources ----
     // The parent process does not handle FCGI requests — it only waits for
-    // children to exit.  Close the listen socket so we don't hold it open
-    // unnecessarily — the children inherited it via fork().
+    // children to exit.  Close the knxd connection now so we don't waste a
+    // connection slot and don't interfere with the children's connections.
+    knxd.disconnect();
 
     // Close the listen socket in the parent. The children inherited it
     // via fork(), so it stays open for them. The parent doesn't need it
@@ -416,46 +419,6 @@ int main(int argc, char* argv[]) {
     } else {
       std::cout << "[INFO] All " << num_workers << " workers started, waiting for children...\n";
       std::cout << std::flush;
-
-      // ---- Startup health check ----
-      // Wait for the stagger window plus the extended retry period so all
-      // children have had a fair chance to connect.  Then check how many
-      // exited with connection errors (exit code 1 or 2).
-      //
-      // Stagger: (num_workers-1) * 100ms.  Extended retries: ~15.5s total
-      // (500+1000+2000+4000+8000).  Add a 2s buffer = ~20s max.
-      {
-        int grace_ms = (num_workers - 1) * 100 + 20000;
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(grace_ms);
-        int connect_failures = 0;
-        while (std::chrono::steady_clock::now() < deadline) {
-          int status = 0;
-          pid_t waited = ::waitpid(-1, &status, WNOHANG);
-          if (waited > 0) {
-            if (WIFEXITED(status)) {
-              int code = WEXITSTATUS(status);
-              if (code == 1 || code == 2) {
-                connect_failures++;
-              }
-            }
-          } else if (waited < 0) {
-            if (errno == ECHILD)
-              break;
-          }
-          ::usleep(100000);  // 100ms poll interval
-        }
-        if (connect_failures > 0) {
-          std::cerr << "[ERROR] " << connect_failures << " of " << num_workers
-                    << " workers could not connect to knxd.\n"
-                    << "        knxd likely has a connection limit (set via -E flag) "
-                    << "lower than needed.\n"
-                    << "        With " << num_workers << " workers, knxd needs at least "
-                    << num_workers << " connections.\n"
-                    << "        Either reduce FCGI_WORKERS to " << (num_workers - connect_failures)
-                    << " or increase knxd's connection limit\n"
-                    << "        (e.g., start knxd with -E 1.1.239:" << num_workers << ").\n";
-        }
-      }
 
       // Wait for all child processes.  When a child exits unexpectedly,
       // log it and continue waiting for others.  When SIGTERM is received,
