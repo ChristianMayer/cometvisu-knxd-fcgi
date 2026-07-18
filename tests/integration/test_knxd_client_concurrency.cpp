@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -58,6 +59,12 @@ std::string make_temp_socket_path() {
 /// be blocked by a long-poll (cache_last_updates_2) on the cache connection.
 class FakeKnxdServer {
 public:
+  /// Record of a received group packet.
+  struct ReceivedGroupPacket {
+    uint16_t group_addr;
+    std::vector<uint8_t> apdu;
+  };
+
   FakeKnxdServer() {
     socket_path_ = make_temp_socket_path();
     if (socket_path_.empty()) {
@@ -125,6 +132,12 @@ public:
   [[nodiscard]] bool is_ready() const { return listen_fd_ >= 0; }
   [[nodiscard]] const std::string& path() const { return socket_path_; }
 
+  /// Get all group packets received by the fake server.
+  [[nodiscard]] std::vector<ReceivedGroupPacket> received_packets() const {
+    std::lock_guard<std::mutex> lock(recv_mutex_);
+    return received_packets_;
+  }
+
 private:
   /// Read exactly N bytes from fd. Returns false on EOF/error.
   static bool read_exact(int fd, uint8_t* buf, size_t len) {
@@ -190,10 +203,33 @@ private:
         continue;
       }
 
-      if (msg_type == EIB_GROUP_PACKET) {
-        // Group packet — just acknowledge receipt by keeping the connection alive.
+      if (msg_type == EIB_GROUP_PACKET && payload_len >= 4) {
+        // Group packet: [dst_addr:2][apdu:N]
+        uint16_t dst_addr = static_cast<uint16_t>((payload[2] << 8) | payload[3]);
+        std::vector<uint8_t> apdu(payload.begin() + 4, payload.end());
+        {
+          std::lock_guard<std::mutex> lock(recv_mutex_);
+          received_packets_.push_back({dst_addr, std::move(apdu)});
+        }
         // send_group_packet() returns after write_all() succeeds, so we don't
         // need to send a response. Just continue.
+        continue;
+      }
+
+      if (msg_type == EIB_CACHE_READ || msg_type == EIB_CACHE_READ_NOWAIT) {
+        // Cache read request: [addr:2]
+        // Response for cache miss: [type:2][src:2][dst:2] = 6 bytes payload
+        if (payload_len >= 2) {
+          std::array<uint8_t, 8> resp = {0x00,
+                                         0x06,  // payload length = 6
+                                         static_cast<uint8_t>((msg_type >> 8) & 0xFF),
+                                         static_cast<uint8_t>(msg_type & 0xFF),
+                                         payload[0],   // src hi (echo)
+                                         payload[1],   // src lo
+                                         payload[0],   // dst hi
+                                         payload[1]};  // dst lo
+          write_all(fd, resp.data(), resp.size());
+        }
         continue;
       }
 
@@ -244,6 +280,8 @@ private:
   std::string socket_path_;
   std::atomic<bool> shutdown_{false};
   std::thread accept_thread_;
+  mutable std::mutex recv_mutex_;
+  std::vector<ReceivedGroupPacket> received_packets_;
 };
 
 }  // namespace
@@ -315,4 +353,71 @@ TEST_F(KnxdClientConcurrencyTest, SendGroupPacketNotBlockedByLongPoll) {
 
   longpoll_thread.join();
   EXPECT_TRUE(longpoll_done.load());
+}
+
+/// Verify that send_group_packet() actually sends a correctly formatted
+/// group packet that the knxd server receives.  This is a regression test
+/// for the "halve knxd connections" change where cache_read was moved to
+/// share the main connection fd.
+TEST_F(KnxdClientConcurrencyTest, SendGroupPacketReachesServer) {
+  std::vector<uint8_t> apdu = {0x00, 0x80, 0x42};
+  EXPECT_TRUE(client_.send_group_packet(0x0A03, apdu));
+
+  // Give the fake server thread time to process
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  auto packets = fake_knxd_.received_packets();
+  ASSERT_EQ(packets.size(), 1);
+  EXPECT_EQ(packets[0].group_addr, 0x0A03);
+  EXPECT_EQ(packets[0].apdu, apdu);
+}
+
+/// Verify that send_group_packet() works correctly even after cache_read
+/// has been called.  The two operations share the main connection
+/// in the "halve connections" design, so we need to ensure the cache
+/// read buffer is not interfering with writes.
+TEST_F(KnxdClientConcurrencyTest, SendGroupPacketAfterCacheRead) {
+  // First, do a cache_read to exercise the cache connection path
+  auto cache_result = client_.cache_read(0x0A03, true);
+  // Fake server responds with cache miss — expected
+  EXPECT_FALSE(cache_result.has_value());
+
+  // Now send a group packet
+  std::vector<uint8_t> apdu = {0x00, 0x80, 0x0C, 0x6F};
+  EXPECT_TRUE(client_.send_group_packet(0x0B04, apdu));
+
+  // Give the fake server time to process
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  auto packets = fake_knxd_.received_packets();
+  ASSERT_EQ(packets.size(), 1);
+  EXPECT_EQ(packets[0].group_addr, 0x0B04);
+  EXPECT_EQ(packets[0].apdu, apdu);
+}
+
+/// Verify that cache_read followed by send_group_packet works when
+/// multiple cache reads are interleaved with writes.
+TEST_F(KnxdClientConcurrencyTest, SendGroupPacketAfterCacheReadTwice) {
+  // First cache_read
+  EXPECT_FALSE(client_.cache_read(0x0A03, true).has_value());
+
+  // Send a packet
+  std::vector<uint8_t> apdu1 = {0x00, 0x80, 0x42};
+  EXPECT_TRUE(client_.send_group_packet(0x0A03, apdu1));
+
+  // Second cache_read
+  EXPECT_FALSE(client_.cache_read(0x0B04, true).has_value());
+
+  // Send another packet
+  std::vector<uint8_t> apdu2 = {0x00, 0x80, 0x0C, 0x6F};
+  EXPECT_TRUE(client_.send_group_packet(0x0C05, apdu2));
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  auto packets = fake_knxd_.received_packets();
+  ASSERT_EQ(packets.size(), 2);
+  EXPECT_EQ(packets[0].group_addr, 0x0A03);
+  EXPECT_EQ(packets[0].apdu, apdu1);
+  EXPECT_EQ(packets[1].group_addr, 0x0C05);
+  EXPECT_EQ(packets[1].apdu, apdu2);
 }

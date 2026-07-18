@@ -58,6 +58,10 @@ bool MockKnxdClient::send_group_packet(uint16_t group_addr, const std::vector<ui
   if (!connected_ || !group_socket_open_) {
     return false;
   }
+  if (send_fail_count_ > 0) {
+    send_fail_count_--;
+    return false;
+  }
   sent_packets_.push_back({.group_addr = group_addr, .apdu = apdu});
   return true;
 }
