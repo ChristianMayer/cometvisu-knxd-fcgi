@@ -58,6 +58,10 @@ void FcgiServer::set_load_shed_semaphore(sem_t* sem) {
   load_shed_sem_ = sem;
 }
 
+void FcgiServer::set_concurrency_semaphore(sem_t* sem) {
+  concurrency_sem_ = sem;
+}
+
 bool FcgiServer::listen(const std::string& socket_path, int backlog) {
   if (socket_path.empty()) {
     return false;
@@ -114,6 +118,29 @@ int FcgiServer::run() {
       // for use in both single-threaded and multithreaded contexts.
       const FcgiRequest req = read_request(request_.envp);
 
+      // ---- General concurrency limiting ----
+      // Before processing any request, check if we have capacity.  If all
+      // workers are busy (semaphore exhausted), return HTTP 503 immediately.
+      // This prevents the listen backlog from filling up and causing the
+      // reverse proxy to return 502 Bad Gateway.  Write requests are NOT
+      // exempt — they complete quickly, so they won't hold the semaphore
+      // for long, and this ensures we never accept more connections than
+      // we can handle.
+      bool acquired_conc = false;
+      if (concurrency_sem_ != nullptr) {
+        if (::sem_trywait(concurrency_sem_) == 0) {
+          acquired_conc = true;
+        } else {
+          // All workers busy — return 503 immediately
+          FcgiResponse busy_resp;
+          busy_resp.status_code = 503;
+          busy_resp.body = R"({"error":"all workers busy"})";
+          write_response(busy_resp);
+          FCGX_Finish_r(&request_);
+          continue;
+        }
+      }
+
       // ---- Load shedding for long-poll requests ----
       // When a shared semaphore is configured, try to acquire it before
       // dispatching read (long-poll) requests.  If the semaphore is
@@ -131,7 +158,8 @@ int FcgiServer::run() {
           // The client will retry, and this frees up the accept queue for
           // write requests which complete quickly.
           FcgiResponse empty_resp;
-          empty_resp.body = "{}";
+          empty_resp.status_code = 503;
+          empty_resp.body = R"({"error":"too many long-poll requests"})";
           write_response(empty_resp);
           FCGX_Finish_r(&request_);
           continue;
@@ -148,10 +176,12 @@ int FcgiServer::run() {
 
       FCGX_Finish_r(&request_);
 
-      // Release the semaphore after the request completes so another
-      // worker can pick up a long-poll read.
+      // Release the semaphores after the request completes
       if (acquired_sem) {
         ::sem_post(load_shed_sem_);
+      }
+      if (acquired_conc) {
+        ::sem_post(concurrency_sem_);
       }
     }
   } else {
@@ -186,7 +216,7 @@ void FcgiServer::shutdown() {
     // Step 2: Connect to unblock any workers that didn't respond to
     // shutdown(). Each accepted connection gets an immediate client EOF,
     // causing FCGX_Accept_r to return -1 and the worker to exit.
-    struct sockaddr_un addr{};
+    struct sockaddr_un addr {};
     socklen_t addr_len = sizeof(addr);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     if (::getsockname(listen_fd_, reinterpret_cast<struct sockaddr*>(&addr), &addr_len) == 0) {

@@ -44,7 +44,7 @@ FcgiResponse Router::route(const FcgiRequest& request) {
   } else {
     // Unknown endpoint
     response.status_code = 404;
-    response.body = "{}";
+    response.body = R"({"error":"unknown endpoint"})";
   }
 
   return response;

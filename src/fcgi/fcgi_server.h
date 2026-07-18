@@ -74,6 +74,15 @@ public:
   ///            initialized to the number of workers before forking.
   void set_load_shed_semaphore(sem_t* sem);
 
+  /// Set a shared semaphore for general request concurrency limiting.
+  /// When set, ALL requests (both read and write) must acquire this
+  /// semaphore before processing.  If exhausted, the request returns
+  /// HTTP 503 immediately, preventing the listen backlog from filling
+  /// up and causing the reverse proxy to return 502 Bad Gateway.
+  /// @param sem Pointer to a sem_t in shared memory (MAP_SHARED). Must be
+  ///            initialized to a safe concurrency limit.
+  void set_concurrency_semaphore(sem_t* sem);
+
   /// Open a TCP or Unix socket for direct FCGI connections.
   /// Once opened, the socket is automatically used by run() alongside the
   /// standard FCGI stdin/stdout stream.
@@ -123,9 +132,10 @@ private:
   FCGX_Request request_{};
   std::atomic<bool> shutdown_requested_{false};
   std::vector<std::thread> workers_;
-  int num_workers_ = 0;             // set by run_multithreaded(), used by shutdown()
-  std::mutex fcgi_mutex_;           // serializes libfcgi calls in multithreaded mode
-  sem_t* load_shed_sem_ = nullptr;  // shared semaphore for load shedding
+  int num_workers_ = 0;               // set by run_multithreaded(), used by shutdown()
+  std::mutex fcgi_mutex_;             // serializes libfcgi calls in multithreaded mode
+  sem_t* load_shed_sem_ = nullptr;    // shared semaphore for load shedding (/r only)
+  sem_t* concurrency_sem_ = nullptr;  // shared semaphore for total request limiting
 
   /// Read all FCGI parameters from stdin into an FcgiRequest.
   /// Uses getenv() which reads from the global environ pointer.

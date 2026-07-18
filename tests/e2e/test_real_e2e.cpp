@@ -370,14 +370,18 @@ TEST_F(RealKnxdE2ETest, WriteInvalidHexReturns200) {
 
 TEST_F(RealKnxdE2ETest, RouterUnknownEndpointReturns404) {
   Router router(knxd_, sessions_);
-  EXPECT_EQ(router.route(req("GET", "/nonexistent")).status_code, 404);
+  auto resp = router.route(req("GET", "/nonexistent"));
+  EXPECT_EQ(resp.status_code, 404);
+  EXPECT_NE(resp.body.find("\"error\":\"unknown endpoint\""), std::string::npos);
 }
 
 // ---- Session Validation ----
 
 TEST_F(RealKnxdE2ETest, InvalidSessionReturns401) {
   Router router(knxd_, sessions_);
-  EXPECT_EQ(router.route(req("GET", "/r", "a=" + a(13) + "&t=30&s=bad")).status_code, 401);
+  auto resp = router.route(req("GET", "/r", "a=" + a(13) + "&t=30&s=bad"));
+  EXPECT_EQ(resp.status_code, 401);
+  EXPECT_NE(resp.body.find("\"error\":\"invalid session\""), std::string::npos);
 }
 
 TEST_F(RealKnxdE2ETest, ValidSessionAllowsWrite) {
@@ -649,12 +653,16 @@ TEST_F(RealKnxdE2ETest, MultiClientReadWithOldIndexReturnsAllChanges) {
 
 TEST_F(RealKnxdE2ETest, ReadMissingAddressReturns400) {
   Router router(knxd_, sessions_);
-  EXPECT_EQ(router.route(req("GET", "/r", "t=30")).status_code, 400);
+  auto resp = router.route(req("GET", "/r", "t=30"));
+  EXPECT_EQ(resp.status_code, 400);
+  EXPECT_NE(resp.body.find("\"error\":\"missing address\""), std::string::npos);
 }
 
 TEST_F(RealKnxdE2ETest, ReadInvalidTimeoutReturns400) {
   Router router(knxd_, sessions_);
-  EXPECT_EQ(router.route(req("GET", "/r", "a=" + a(16) + "&t=abc")).status_code, 400);
+  auto resp = router.route(req("GET", "/r", "a=" + a(16) + "&t=abc"));
+  EXPECT_EQ(resp.status_code, 400);
+  EXPECT_NE(resp.body.find("\"error\":\"invalid timeout\""), std::string::npos);
 }
 
 // ==========================================================================

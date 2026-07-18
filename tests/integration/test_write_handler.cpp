@@ -113,6 +113,7 @@ TEST_F(WriteHandlerTest, InvalidAddress) {
   WriteHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=invalid&v=8042");
   EXPECT_EQ(result.http_status, 404);
+  EXPECT_NE(result.body.find("\"error\":\"invalid address format\""), std::string::npos);
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
 
@@ -179,6 +180,7 @@ TEST_F(WriteHandlerTest, SessionInvalidReturns401) {
   WriteHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=KNX:1/2/3&v=8042&s=nonexistent");
   EXPECT_EQ(result.http_status, 401);
+  EXPECT_NE(result.body.find("\"error\":\"invalid session\""), std::string::npos);
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
 
@@ -199,26 +201,22 @@ TEST_F(WriteHandlerTest, ValidSessionWrites) {
 }
 
 TEST_F(WriteHandlerTest, SendFailureReturns503) {
-  // When the knxd connection fails (e.g. knxd restart, socket error),
-  // send_group_packet returns false. The handler must report this to the
-  // client instead of silently returning 200 (which would make the client
-  // believe the write succeeded when it didn't reach the bus).
   knxd_.set_send_fail_count(1);
 
   WriteHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=KNX:1/2/3&v=8042");
   EXPECT_EQ(result.http_status, 503);
+  EXPECT_NE(result.body.find("\"error\":\"write failed\""), std::string::npos);
   EXPECT_TRUE(knxd_.sent_packets().empty());
 }
 
 TEST_F(WriteHandlerTest, PartialFailureReturns503) {
-  // When writing to multiple addresses with one failure, report 503.
   knxd_.set_send_fail_count(1);
 
   WriteHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=KNX:1/2/3&a=KNX:4/5/6&v=8042");
   EXPECT_EQ(result.http_status, 503);
-  // The first write should fail; the second might or might not be attempted.
+  EXPECT_NE(result.body.find("\"error\":\"write failed\""), std::string::npos);
 }
 
 TEST_F(WriteHandlerTest, SendFailureClearedOnSubsequentCalls) {
@@ -230,6 +228,7 @@ TEST_F(WriteHandlerTest, SendFailureClearedOnSubsequentCalls) {
   // First call fails
   auto result1 = handler.handle("a=KNX:1/2/3&v=8042");
   EXPECT_EQ(result1.http_status, 503);
+  EXPECT_NE(result1.body.find("\"error\":\"write failed\""), std::string::npos);
 
   // Reset the mock and try again — should succeed
   knxd_.set_send_fail_count(0);

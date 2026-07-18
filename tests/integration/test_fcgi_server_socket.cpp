@@ -14,20 +14,20 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include <gtest/gtest.h>
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
-
-#include <sys/wait.h>
-#include <unistd.h>
-
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
 
 #include "fcgi/fcgi_server.h"
 
@@ -114,15 +114,13 @@ protected:
   void SetUp() override {
     if (!sockets_available()) {
       GTEST_SKIP() << "Unix socket creation is blocked by sandbox; "
-                    << "run with unsandboxed execution to test FCGI direct socket";
+                   << "run with unsandboxed execution to test FCGI direct socket";
     }
     socket_path_ = make_unique_socket_path();
     ASSERT_FALSE(socket_path_.empty()) << "Failed to create temp socket path";
   }
 
-  void TearDown() override {
-    unlink(socket_path_.c_str());
-  }
+  void TearDown() override { unlink(socket_path_.c_str()); }
 
   [[nodiscard]] int connect_to_server() const {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -187,7 +185,97 @@ TEST_F(FcgiServerSocketTest, ListenRejectsColonOnly) {
 }
 
 // ============================================================
-// Socket connectivity tests
+// Concurrency exhaustion test: verifies that when all workers are
+// busy, additional requests get HTTP 503 immediately instead of
+// queuing in the listen backlog (which would cause the reverse proxy
+// to return 502 Bad Gateway).
+// ============================================================
+
+/// Send a FastCGI request via cgi-fcgi and extract the HTTP status code
+/// from the response headers. Returns the status code, or -1 on failure.
+static int fcgi_request_status(const std::string& socket_path, const std::string& query_string) {
+  // Use cgi-fcgi to send a proper FastCGI request
+  std::string cmd = "cgi-fcgi -bind -connect " + socket_path +
+                    " 2>/dev/null <<'EOF'\n"
+                    "REQUEST_METHOD=GET\n"
+                    "SCRIPT_NAME=/r\n"
+                    "QUERY_STRING=" +
+                    query_string +
+                    "\n"
+                    "SERVER_NAME=localhost\n"
+                    "SERVER_PORT=80\n"
+                    "SERVER_PROTOCOL=HTTP/1.1\n"
+                    "CONTENT_TYPE=application/x-www-form-urlencoded\n"
+                    "CONTENT_LENGTH=0\n"
+                    "EOF";
+
+  FILE* pipe = popen(cmd.c_str(), "r");
+  if (pipe == nullptr)
+    return -1;
+
+  std::string output;
+  char buf[4096];
+  while (fgets(buf, sizeof(buf), pipe) != nullptr) {
+    output += buf;
+  }
+  int rc = pclose(pipe);
+  if (rc != 0) {
+    // cgi-fcgi returns non-zero on FCGI errors — treat as unavailable
+    return -1;
+  }
+
+  // Parse Status: header from FCGI response
+  auto pos = output.find("Status: ");
+  if (pos == std::string::npos)
+    return -1;
+  pos += 8;
+  auto end = output.find_first_of("\r\n", pos);
+  if (end == std::string::npos)
+    return -1;
+  try {
+    return std::stoi(output.substr(pos, end - pos));
+  } catch (...) {
+    return -1;
+  }
+}
+
+TEST_F(FcgiServerSocketTest, ConcurrencyExhaustionReturns503) {
+  // Concurrency semaphore: 0 slots available → every request should get 503
+  sem_t* conc_sem = static_cast<sem_t*>(
+      mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
+  ASSERT_NE(conc_sem, MAP_FAILED);
+  sem_init(conc_sem, 1, 0);  // 0 = exhausted
+
+  pid_t child = fork();
+  ASSERT_GE(child, 0);
+
+  if (child == 0) {
+    // Child: run the server with concurrency semaphore exhausted (0 slots)
+    FcgiServer server;
+    ASSERT_TRUE(server.listen(socket_path_));
+    server.set_concurrency_semaphore(conc_sem);
+    server.set_handler([](const FcgiRequest& /*req*/) -> FcgiResponse { return {200, "{}"}; });
+    server.run();
+    _exit(0);
+  }
+
+  // Give the child time to start listening
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  // Send request — must get 503 because concurrency semaphore is exhausted
+  int status = fcgi_request_status(socket_path_, "a=1/2/3&t=5");
+  EXPECT_EQ(status, 503)
+      << "Request must get 503 when concurrency semaphore is exhausted (0 slots)";
+
+  // Clean up
+  kill(child, SIGTERM);
+  int ws;
+  waitpid(child, &ws, 0);
+
+  sem_destroy(conc_sem);
+  munmap(conc_sem, sizeof(sem_t));
+}
+
 // ============================================================
 
 TEST_F(FcgiServerSocketTest, SocketFileExistsAfterListen) {
@@ -255,4 +343,3 @@ TEST_F(FcgiServerSocketTest, ListenOnTcpPortZero) {
 //
 // Or use the built-in socket mode with a web server:
 //   FCGI_SOCKET=:9000 ./build/src/cometvisu-knxd-fcgi
-

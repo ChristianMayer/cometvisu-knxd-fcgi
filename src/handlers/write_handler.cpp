@@ -43,6 +43,7 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
   if (auto s_opt = params.get("s")) {
     if (!sessions_.is_valid(*s_opt)) {
       result.http_status = 401;
+      result.body = R"({"error":"invalid session"})";
       return result;
     }
   }
@@ -87,6 +88,7 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
   // 404 only when all addresses had an invalid format.
   if (!any_valid && !addresses.empty()) {
     result.http_status = 404;
+    result.body = R"({"error":"invalid address format"})";
   }
 
   // If all valid writes failed, report an error so the client knows the write
@@ -94,6 +96,7 @@ WriteResult WriteHandler::handle(std::string_view query_string) {
   // silently ignored, so clients got HTTP 200 even when the write never went out.
   if (any_valid && any_failed) {
     result.http_status = 503;
+    result.body = R"({"error":"write failed"})";
   }
 
   return result;

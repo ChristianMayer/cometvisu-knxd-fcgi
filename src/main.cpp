@@ -321,6 +321,24 @@ int main(int argc, char* argv[]) {
     }
     server.set_load_shed_semaphore(load_shed_sem);
 
+    // ---- Concurrency limiting semaphore ----
+    // Limits TOTAL concurrent requests (reads + writes) to prevent the
+    // listen backlog from filling up.  When exhausted, returns HTTP 503
+    // immediately, preventing the reverse proxy from returning 502.
+    sem_t* concurrency_sem = static_cast<sem_t*>(
+        ::mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
+    if (concurrency_sem == MAP_FAILED) {
+      std::cerr << "[WARN] Failed to create concurrency semaphore: " << std::strerror(errno)
+                << " (continuing without concurrency limiting)\n";
+      concurrency_sem = nullptr;
+    } else if (::sem_init(concurrency_sem, 1, static_cast<unsigned>(num_workers)) != 0) {
+      std::cerr << "[WARN] Failed to init concurrency semaphore: " << std::strerror(errno)
+                << " (continuing without concurrency limiting)\n";
+      ::munmap(concurrency_sem, sizeof(sem_t));
+      concurrency_sem = nullptr;
+    }
+    server.set_concurrency_semaphore(concurrency_sem);
+
     pid_t parent_pid = ::getpid();
     (void)parent_pid;  // used for debugging / signal filtering if needed
     std::vector<pid_t> worker_pids;
@@ -466,10 +484,14 @@ int main(int argc, char* argv[]) {
       result = 0;
     }
 
-    // ---- Clean up shared semaphore ----
+    // ---- Clean up shared semaphores ----
     if (load_shed_sem != nullptr) {
       ::sem_destroy(load_shed_sem);
       ::munmap(load_shed_sem, sizeof(sem_t));
+    }
+    if (concurrency_sem != nullptr) {
+      ::sem_destroy(concurrency_sem);
+      ::munmap(concurrency_sem, sizeof(sem_t));
     }
   } else {
     // Spawn-fcgi mode: concurrency is handled by running multiple

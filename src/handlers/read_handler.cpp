@@ -63,7 +63,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
   const auto addresses = params.get_all("a");
   if (addresses.empty()) {
     result.http_status = 400;
-    result.body = "{}";
+    result.body = R"({"error":"missing address"})";
     return result;
   }
 
@@ -71,7 +71,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
   if (auto s_opt = params.get("s")) {
     if (!sessions_.is_valid(*s_opt)) {
       result.http_status = 401;
-      result.body = "{}";
+      result.body = R"({"error":"invalid session"})";
       return result;
     }
   }
@@ -85,7 +85,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
     const auto parsed = parse_timeout(*t_opt);
     if (!parsed.has_value()) {
       result.http_status = 400;
-      result.body = "{}";
+      result.body = R"({"error":"invalid timeout"})";
       return result;
     }
     timeout_sec = *parsed;
@@ -120,7 +120,7 @@ ReadResult ReadHandler::handle(std::string_view query_string) {
 
   if (eib_addrs.empty()) {
     result.http_status = 404;
-    result.body = "{}";
+    result.body = R"({"error":"no valid addresses"})";
     return result;
   }
 

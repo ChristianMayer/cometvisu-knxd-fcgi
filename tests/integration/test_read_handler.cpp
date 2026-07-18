@@ -126,9 +126,9 @@ TEST_F(ReadHandlerTest, NegativeTimeoutCacheMiss) {
 
 TEST_F(ReadHandlerTest, NoAddresses) {
   ReadHandler handler(knxd_, sessions_);
-  // No addresses → 400 regardless of any other params
   auto result = handler.handle("s=abc&t=0");
   EXPECT_EQ(result.http_status, 400);
+  EXPECT_NE(result.body.find("\"error\":\"missing address\""), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, MultipleAddresses) {
@@ -384,12 +384,14 @@ TEST_F(ReadHandlerTest, InvalidTimeoutReturns400) {
   ReadHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=1/2/3&t=abc");
   EXPECT_EQ(result.http_status, 400);
+  EXPECT_NE(result.body.find("\"error\":\"invalid timeout\""), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, InvalidTimeoutTrailingGarbage) {
   ReadHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=1/2/3&t=5xyz");
   EXPECT_EQ(result.http_status, 400);
+  EXPECT_NE(result.body.find("\"error\":\"invalid timeout\""), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, SessionInvalidReturns401) {
@@ -399,6 +401,7 @@ TEST_F(ReadHandlerTest, SessionInvalidReturns401) {
   ReadHandler handler(knxd_, sessions_);
   auto result = handler.handle("a=1/2/3&t=30&s=nonexistent");
   EXPECT_EQ(result.http_status, 401);
+  EXPECT_NE(result.body.find("\"error\":\"invalid session\""), std::string::npos);
 }
 
 TEST_F(ReadHandlerTest, AnonymousSessionAlwaysOk) {
@@ -560,8 +563,8 @@ TEST_F(ReadHandlerTest, RetriesOnTransientCacheUpdatesNullopt) {
   //   call 2: nullopt → break (BUG!)
   // With the fix, the handler should retry on nullopt, making more calls.
   EXPECT_GT(knxd_.cache_last_updates_call_count(), 2)
-      << "Handler should retry cache_last_updates_2 on transient nullopt, "
-      << "but only called " << knxd_.cache_last_updates_call_count() << " times";
+      << "Handler should retry cache_last_updates_2 on transient nullopt, " << "but only called "
+      << knxd_.cache_last_updates_call_count() << " times";
 }
 
 TEST_F(ReadHandlerTest, NoProgressPathDoesNotSpinTightly) {
@@ -850,4 +853,5 @@ TEST_F(ReadHandlerTest, NoAddressesReturns400) {
   ReadHandler handler(knxd_, sessions_);
   auto result = handler.handle("s=abc&t=0");
   EXPECT_EQ(result.http_status, 400);
+  EXPECT_NE(result.body.find("\"error\":\"missing address\""), std::string::npos);
 }

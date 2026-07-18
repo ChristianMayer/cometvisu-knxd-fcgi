@@ -132,6 +132,7 @@ TEST_F(FullFlowTest, RouterUnknownRoute) {
 
   auto resp = router.route(req);
   EXPECT_EQ(resp.status_code, 404);
+  EXPECT_NE(resp.body.find("\"error\":\"unknown endpoint\""), std::string::npos);
 }
 
 // ---- Response JSON Structure ----
