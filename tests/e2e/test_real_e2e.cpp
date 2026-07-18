@@ -113,6 +113,15 @@ protected:
     return buf.data();
   }
 
+  /// Expected raw data hex for a knxtool-injected single-byte value.
+  /// knxtool sends APDU [0x00, 0x80|(v&0x3F)], knxd extracts the 6-bit value.
+  /// The read handler outputs hex_encode of the raw data bytes.
+  static std::string raw_hex(uint8_t v) {
+    std::array<char, 4> buf{};
+    [[maybe_unused]] const int _ = snprintf(buf.data(), buf.size(), "%02x", v);
+    return buf.data();
+  }
+
   // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
   std::string knxd_socket_path_;
   KnxdClient knxd_;
@@ -177,6 +186,45 @@ TEST_F(RealKnxdE2ETest, WriteMultipleAddresses) {
             200);
 }
 
+/// Verify that a write via EIB_GROUP_PACKET actually reaches knxd and is stored
+/// in knxd's group cache.  This is the real E2E test for the user's complaint:
+/// "the FastCGI backend never passed a write package to the KNX bus".
+TEST_F(RealKnxdE2ETest, WriteReachesKnxdCache) {
+  Router router(knxd_, sessions_);
+
+  // Write value 0x42 to address a(20)
+  auto wr = router.route(req("GET", "/w", "a=" + a(20) + "&v=8042"));
+  EXPECT_EQ(wr.status_code, 200);
+
+  // Give knxd a moment to process the group packet and update its cache
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  // Read back from knxd's cache — must contain the written value
+  auto cached = knxd_.cache_read(e(20), true);
+  ASSERT_TRUE(cached.has_value()) << "Write did not reach knxd cache! "
+                                  << "The backend sent a group packet but knxd didn't cache it. "
+                                  << "This means the write never reached the KNX bus.";
+  ASSERT_EQ(cached->size(), 1);
+  EXPECT_EQ((*cached)[0], 0x42);
+}
+
+/// Same as above but with a multi-byte value (e.g. temperature DPT 9.001).
+TEST_F(RealKnxdE2ETest, WriteMultiByteReachesKnxdCache) {
+  Router router(knxd_, sessions_);
+
+  // Write 2-byte value 0x0C6F
+  auto wr = router.route(req("GET", "/w", "a=" + a(21) + "&v=800c6f"));
+  EXPECT_EQ(wr.status_code, 200);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  auto cached = knxd_.cache_read(e(21), true);
+  ASSERT_TRUE(cached.has_value()) << "Multi-byte write did not reach knxd cache!";
+  ASSERT_EQ(cached->size(), 2);
+  EXPECT_EQ((*cached)[0], 0x0C);
+  EXPECT_EQ((*cached)[1], 0x6F);
+}
+
 // ---- Read with timeout — returns 200 (empty on virtual bus) ----
 
 TEST_F(RealKnxdE2ETest, ReadWithTimeoutReturnsEmpty) {
@@ -200,11 +248,15 @@ TEST_F(RealKnxdE2ETest, ReadCacheOnlyReturnsEmpty) {
 TEST_F(RealKnxdE2ETest, CometLongPollReceivesInjectedTelegram) {
   Router router(knxd_, sessions_, 30);
 
-  std::string target = a(7);
+  // Use k() for the raw address format without namespace prefix, matching
+  // the response output. The read handler uses KnxAddress::to_cometvisu()
+  // with the configured default namespace (empty by default).
+  std::string target = k(7);
+  std::string url_addr = a(7);
   std::promise<FcgiResponse> p;
   auto f = p.get_future();
 
-  std::thread reader([&]() { p.set_value(router.route(req("GET", "/r", "a=" + target))); });
+  std::thread reader([&]() { p.set_value(router.route(req("GET", "/r", "a=" + url_addr))); });
 
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   inject(7, 2);
@@ -216,18 +268,23 @@ TEST_F(RealKnxdE2ETest, CometLongPollReceivesInjectedTelegram) {
   reader.join();
 
   EXPECT_EQ(resp.status_code, 200);
+  // Response uses raw address format (no namespace prefix)
   EXPECT_NE(resp.body.find(target), std::string::npos);
-  EXPECT_NE(resp.body.find(hex(2)), std::string::npos) << "Must contain APDU hex " << hex(2);
+  // Response uses raw data hex (no APCI prefix). knxtool injects value 2 as
+  // APDU [0x00, 0x82]; knxd extracts and stores just the 6-bit value [0x02].
+  EXPECT_NE(resp.body.find(raw_hex(2)), std::string::npos)
+      << "Must contain raw data hex " << raw_hex(2);
 }
 
 TEST_F(RealKnxdE2ETest, CometLongPollSkipsNonMatchingTelegram) {
   Router router(knxd_, sessions_, 30);
 
-  std::string target = a(8);
+  std::string target = k(8);
+  std::string url_addr = a(8);
   std::promise<FcgiResponse> p;
   auto f = p.get_future();
 
-  std::thread reader([&]() { p.set_value(router.route(req("GET", "/r", "a=" + target))); });
+  std::thread reader([&]() { p.set_value(router.route(req("GET", "/r", "a=" + url_addr))); });
 
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
@@ -241,8 +298,8 @@ TEST_F(RealKnxdE2ETest, CometLongPollSkipsNonMatchingTelegram) {
   reader.join();
 
   EXPECT_EQ(resp.status_code, 200);
-  EXPECT_NE(resp.body.find(hex(2)), std::string::npos);
-  EXPECT_EQ(resp.body.find(hex(1)), std::string::npos);
+  EXPECT_NE(resp.body.find(raw_hex(2)), std::string::npos);
+  EXPECT_EQ(resp.body.find(raw_hex(1)), std::string::npos);
 }
 
 // ---- COMET Timeout ----

@@ -87,6 +87,10 @@ public:
   /// (simulating connection loss / knxd restart).
   void set_cache_read_fail_count(int count) { cache_read_fail_count_ = count; }
 
+  /// Make the next N calls to send_group_packet return false
+  /// (simulating connection loss / write failure).
+  void set_send_fail_count(int count) { send_fail_count_ = count; }
+
   /// Make the next N calls to connect() return false before succeeding.
   /// After N failures, connect() returns connection_success_.
   void set_connect_fail_count(int count) { connect_fail_count_ = count; }
@@ -116,6 +120,7 @@ private:
   // Fail-count controls for testing reconnection resilience
   int cache_updates_fail_count_ = 0;
   int cache_read_fail_count_ = 0;
+  int send_fail_count_ = 0;
 
   // Call counter for verifying retry behavior
   int cache_last_updates_call_count_ = 0;
