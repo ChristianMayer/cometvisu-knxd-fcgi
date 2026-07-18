@@ -47,6 +47,7 @@ public:
   [[nodiscard]] bool poll_group_telegram(uint16_t& out_group_addr,
                                          std::vector<uint8_t>& out_apdu) override;
   [[nodiscard]] int get_fd() const override;
+  [[nodiscard]] int get_cache_fd() const override { return -1; }
   [[nodiscard]] uint64_t get_telegram_count() const override;
   void set_nonblocking(bool enable) override;
 

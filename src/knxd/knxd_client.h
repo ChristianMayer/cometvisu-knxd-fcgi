@@ -83,7 +83,11 @@ public:
   [[nodiscard]] virtual bool poll_group_telegram(uint16_t& out_group_addr,
                                                  std::vector<uint8_t>& out_apdu) = 0;
 
-  /// Get the underlying file descriptor for poll()/select() integration.
+  /// Get the cache file descriptor for poll()/select() integration.
+  /// This is the fd of the separate cache connection — used for long-poll
+  /// reads where we block on cache_last_updates_2 responses.
+  /// Returns -1 if not connected.
+  [[nodiscard]] virtual int get_cache_fd() const = 0;
   /// Returns -1 if not connected.
   ///
   /// WARNING: The returned fd is only valid while the calling thread holds
@@ -126,6 +130,7 @@ public:
   [[nodiscard]] bool poll_group_telegram(uint16_t& out_group_addr,
                                          std::vector<uint8_t>& out_apdu) override;
   [[nodiscard]] int get_fd() const override;
+  [[nodiscard]] int get_cache_fd() const override;
   [[nodiscard]] uint64_t get_telegram_count() const override;
   void set_nonblocking(bool enable) override;
 

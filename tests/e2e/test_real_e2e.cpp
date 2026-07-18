@@ -324,4 +324,67 @@ TEST_F(RealKnxdE2ETest, ReadInvalidTimeoutReturns400) {
   Router router(knxd_, sessions_);
   EXPECT_EQ(router.route(req("GET", "/r", "a=" + a(16) + "&t=abc")).status_code, 400);
 }
+
+// ---- Write-then-Read E2E: verify writes actually reach the bus ----
+
+/// Verify that send_group_packet() actually sends data that knxd caches,
+/// so a subsequent cache_read returns the written value.
+TEST_F(RealKnxdE2ETest, SendGroupPacketCachesValue) {
+  uint16_t addr = e(17);
+
+  // Send a group packet directly (bypasses the handler)
+  std::vector<uint8_t> apdu = {0x00, 0x80, 0x42};
+  ASSERT_TRUE(knxd_.send_group_packet(addr, apdu));
+
+  // Give knxd time to process the write and update its cache
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  // Read back from cache — must contain the written value
+  auto cached = knxd_.cache_read(addr, true);
+  ASSERT_TRUE(cached.has_value()) << "knxd did not cache the written value for " << k(17)
+                                  << " — send_group_packet may not be reaching the bus";
+  EXPECT_EQ(cached->size(), 1);
+  EXPECT_EQ((*cached)[0], 0x42);
+}
+
+/// End-to-end test: write via the /w handler, then read back via cache_read.
+/// This verifies the full CometVisu → knxd → bus → cache round-trip.
+TEST_F(RealKnxdE2ETest, WriteHandlerThenCacheRead) {
+  Router router(knxd_, sessions_);
+  std::string target = a(18);
+  uint16_t addr = e(18);
+
+  // Write via the handler (same path as the browser uses)
+  auto wResp = router.route(req("GET", "/w", "a=" + target + "&v=8042"));
+  EXPECT_EQ(wResp.status_code, 200);
+
+  // Give knxd time to process
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  // Read back from cache
+  auto cached = knxd_.cache_read(addr, true);
+  ASSERT_TRUE(cached.has_value()) << "Write via /w handler did not result in cached value for "
+                                  << k(18) << " — the write may not be reaching the knxd bus";
+  EXPECT_EQ(cached->size(), 1);
+  EXPECT_EQ((*cached)[0], 0x42);
+}
+
+/// Verify multi-byte write (DPT 9.001 temperature: 0x0C6F = 31.83°C)
+/// reaches the bus and is cached.
+TEST_F(RealKnxdE2ETest, WriteHandlerMultiByteThenCacheRead) {
+  Router router(knxd_, sessions_);
+  std::string target = a(19);
+  uint16_t addr = e(19);
+
+  auto wResp = router.route(req("GET", "/w", "a=" + target + "&v=800c6f"));
+  EXPECT_EQ(wResp.status_code, 200);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  auto cached = knxd_.cache_read(addr, true);
+  ASSERT_TRUE(cached.has_value()) << "Multi-byte write did not cache value for " << k(19);
+  ASSERT_EQ(cached->size(), 2);
+  EXPECT_EQ((*cached)[0], 0x0C);
+  EXPECT_EQ((*cached)[1], 0x6F);
+}
 // NOLINTEND(cert-err58-cpp, misc-use-anonymous-namespace)

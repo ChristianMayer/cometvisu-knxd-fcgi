@@ -34,24 +34,29 @@ namespace cvknxd {
 
 struct KnxdClient::Impl {
   int fd = -1;
+  int cache_fd_ = -1;  // separate plain connection for cache operations
   bool group_socket_open = false;
-  std::string socket_path_;           // stored for reconnect
-  bool write_only_ = false;           // stored for reconnect
-  std::vector<uint8_t> read_buffer_;  // buffered partial reads for non-blocking mode
-  uint64_t telegram_count_ = 0;       // total group telegrams received from knxd bus
+  std::string socket_path_;                 // stored for reconnect
+  bool write_only_ = false;                 // stored for reconnect
+  std::vector<uint8_t> read_buffer_;        // buffered partial reads for non-blocking mode
+  std::vector<uint8_t> cache_read_buffer_;  // separate buffer for cache connection reads
+  uint64_t telegram_count_ = 0;             // total group telegrams received from knxd bus
 
-  // Mutex serializes all access to the knxd socket connection (fd).
+  // Mutex serializes all access to the knxd socket connections.
   // recursive_mutex is used because public methods call each other internally
   // (e.g. connect() calls disconnect(), open_group_socket() calls is_connected()).
-  // Cache operations (cache_read, cache_last_updates_2) also use this mutex —
-  // they share the main connection instead of opening a separate one,
-  // halving the number of knxd connections required per worker.
+  // Cache operations (cache_read, cache_last_updates_2) use a separate plain
+  // connection (cache_fd_) because knxd does NOT respond to cache requests
+  // on a group-socket connection.
   mutable std::recursive_mutex mutex;
 
   Impl() = default;
   ~Impl() {
     if (fd >= 0) {
       ::close(fd);
+    }
+    if (cache_fd_ >= 0) {
+      ::close(cache_fd_);
     }
   }
   Impl(const Impl&) = delete;
@@ -132,6 +137,23 @@ bool KnxdClient::connect(std::string_view socket_path) {
   // Store path for potential reconnect
   impl_->socket_path_ = socket_path;
 
+  // Also open a plain connection for cache operations (cache_read,
+  // cache_last_updates_2).  knxd does NOT respond to cache requests
+  // on a group-socket connection, so we need a separate plain connection.
+  impl_->cache_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (impl_->cache_fd_ >= 0) {
+    struct sockaddr_un cache_addr;
+    std::memset(&cache_addr, 0, sizeof(cache_addr));
+    cache_addr.sun_family = AF_UNIX;
+    std::memcpy(cache_addr.sun_path, socket_path.data(), socket_path.size());
+    if (::connect(impl_->cache_fd_, reinterpret_cast<struct sockaddr*>(&cache_addr),
+                  sizeof(cache_addr)) < 0) {
+      ::close(impl_->cache_fd_);
+      impl_->cache_fd_ = -1;
+      // cache connection is optional — main connection may still work
+    }
+  }
+
   return true;
 }
 
@@ -142,8 +164,13 @@ void KnxdClient::disconnect() {
     ::close(impl_->fd);
     impl_->fd = -1;
   }
+  if (impl_->cache_fd_ >= 0) {
+    ::close(impl_->cache_fd_);
+    impl_->cache_fd_ = -1;
+  }
   impl_->group_socket_open = false;
   impl_->read_buffer_.clear();
+  impl_->cache_read_buffer_.clear();
   // Note: socket_path_ and write_only_ are preserved for reconnect
 }
 
@@ -164,8 +191,13 @@ bool KnxdClient::reconnect() {
     ::close(impl_->fd);
     impl_->fd = -1;
   }
+  if (impl_->cache_fd_ >= 0) {
+    ::close(impl_->cache_fd_);
+    impl_->cache_fd_ = -1;
+  }
   impl_->group_socket_open = false;
   impl_->read_buffer_.clear();
+  impl_->cache_read_buffer_.clear();
 
   // Re-establish connection
   if (!connect(impl_->socket_path_)) {
@@ -358,32 +390,11 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
     return std::nullopt;
   }
 
-  // Process any pending complete messages in the buffer before sending our
-  // request.  Previous operations (cache_last_updates_2, poll_group_telegram)
-  // may have left complete APDU_PACKET or GROUP_PACKET messages in the shared
-  // buffer.  Processing them now ensures telegrams are counted rather than lost.
-  // We only process interleaved telegrams — stale cache responses from previous
-  // requests are discarded to avoid returning wrong values for this request.
-  while (true) {
-    auto pending = try_extract_message(impl_->read_buffer_);
-    if (!pending.has_value()) {
-      break;
-    }
-    shrink_if_large(impl_->read_buffer_);
-    uint16_t pending_type = 0;
-    std::vector<uint8_t> pending_data;
-    if (!parse_eibd_message(*pending, pending_type, pending_data)) {
-      continue;
-    }
-    if (pending_type == EibMessageType::APDU_PACKET && pending_data.size() >= 6) {
-      impl_->telegram_count_++;
-      continue;
-    }
-    if (pending_type == EibMessageType::GROUP_PACKET && pending_data.size() >= 6) {
-      impl_->telegram_count_++;
-      continue;
-    }
-    // Unknown or stale message — discard
+  // Use the separate plain cache connection.  knxd does NOT respond to
+  // cache requests on a group-socket connection, so we need a dedicated
+  // plain connection for cache operations.
+  if (impl_->cache_fd_ < 0) {
+    return std::nullopt;
   }
 
   const auto addr_str = KnxGroupAddress::from_eibaddr(group_addr).to_string();
@@ -391,56 +402,28 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
 
   const uint16_t msg_type = nowait ? EibMessageType::CACHE_READ_NOWAIT : EibMessageType::CACHE_READ;
   const auto msg = nowait ? build_cache_read_nowait(group_addr) : build_cache_read(group_addr);
-  if (!write_all(impl_->fd, msg.data(), msg.size())) {
+
+  // Write to the cache connection
+  if (!write_all(impl_->cache_fd_, msg.data(), msg.size())) {
     return std::nullopt;
   }
 
-  // Read response from the main connection.  Group telegrams (APDU_PACKET,
-  // GROUP_PACKET) may arrive interleaved with our cache response because
-  // the main connection has a group socket open.  We process telegrams
-  // inline (increment telegram_count_) so they aren't lost, and continue
-  // reading until we find our cache response or hit the deadline.
+  // Read response from the cache connection.  This is a plain connection
+  // (no group socket), so we won't receive interleaved APDU_PACKET or
+  // GROUP_PACKET telegrams — only the direct cache response.
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 
   while (true) {
-    auto raw_msg = try_extract_message(impl_->read_buffer_);
+    auto raw_msg = try_extract_message(impl_->cache_read_buffer_);
     if (raw_msg.has_value()) {
-      shrink_if_large(impl_->read_buffer_);
+      shrink_if_large(impl_->cache_read_buffer_);
       uint16_t resp_type = 0;
       std::vector<uint8_t> resp_data;
       if (!parse_eibd_message(*raw_msg, resp_type, resp_data)) {
         continue;
       }
 
-      // Handle interleaved telegrams — process and count them, then keep
-      // reading for our cache response.
-      if (resp_type == EibMessageType::APDU_PACKET && resp_data.size() >= 6) {
-        impl_->telegram_count_++;
-        DebugLog::knxd_recv(
-            "apdu_packet_interleaved",
-            KnxGroupAddress::from_eibaddr(static_cast<uint16_t>((resp_data[2] << 8) | resp_data[3]))
-                .to_string(),
-            hex_encode(&resp_data[4], resp_data.size() - 4));
-        continue;
-      }
-      if (resp_type == EibMessageType::GROUP_PACKET && resp_data.size() >= 6) {
-        impl_->telegram_count_++;
-        continue;
-      }
-
       if (resp_type == msg_type && resp_data.size() >= 4) {
-        // Verify the destination address matches the requested group address.
-        // Without this check, a stale cache response from a previous request
-        // could be returned for the wrong address.
-        uint16_t resp_dst = static_cast<uint16_t>((resp_data[2] << 8) | resp_data[3]);
-        if (resp_dst != group_addr) {
-          // Stale response for a different address — discard and continue.
-          DebugLog::knxd_recv("cache_read_stale",
-                              KnxGroupAddress::from_eibaddr(resp_dst).to_string(),
-                              "(discarded, expected " + addr_str + ")");
-          continue;
-        }
-
         if (resp_data.size() == 4) {
           DebugLog::knxd_recv("cache_read_miss", addr_str, "(empty)");
           return std::nullopt;
@@ -470,7 +453,7 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
     }
 
     struct pollfd pfd = {};
-    pfd.fd = impl_->fd;
+    pfd.fd = impl_->cache_fd_;
     pfd.events = POLLIN;
     pfd.revents = 0;
 
@@ -489,20 +472,10 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
     }
 
     std::array<uint8_t, 4096> tmp{};
-    ssize_t n = ::read(impl_->fd, tmp.data(), tmp.size());
+    ssize_t n = ::read(impl_->cache_fd_, tmp.data(), tmp.size());
     if (n > 0) {
-      size_t new_size = impl_->read_buffer_.size() + static_cast<size_t>(n);
-      if (new_size > kMaxReadBufferSize) {
-        size_t excess = new_size - kMaxReadBufferSize;
-        if (excess >= impl_->read_buffer_.size()) {
-          impl_->read_buffer_.clear();
-        } else {
-          impl_->read_buffer_.erase(impl_->read_buffer_.begin(),
-                                    impl_->read_buffer_.begin() + static_cast<ptrdiff_t>(excess));
-        }
-      }
-      impl_->read_buffer_.insert(impl_->read_buffer_.end(), tmp.data(),
-                                 &tmp[static_cast<size_t>(n)]);
+      impl_->cache_read_buffer_.insert(impl_->cache_read_buffer_.end(), tmp.data(),
+                                       &tmp[static_cast<size_t>(n)]);
       continue;
     }
     if (n == 0) {
@@ -518,6 +491,11 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
 int KnxdClient::get_fd() const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   return impl_->fd;
+}
+
+int KnxdClient::get_cache_fd() const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  return impl_->cache_fd_;
 }
 
 uint64_t KnxdClient::get_telegram_count() const {
@@ -617,35 +595,30 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
     return std::nullopt;
   }
 
+  // Use the separate plain cache connection.  knxd does NOT respond to
+  // cache requests on a group-socket connection.
+  if (impl_->cache_fd_ < 0) {
+    return std::nullopt;
+  }
+
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec + 5);
 
   auto msg = build_cache_last_updates_2(start, timeout_sec);
   DebugLog::knxd_send("cache_last_updates_2", "",
                       "start=" + std::to_string(start) + " timeout=" + std::to_string(timeout_sec));
 
-  if (!write_all(impl_->fd, msg.data(), msg.size())) {
+  if (!write_all(impl_->cache_fd_, msg.data(), msg.size())) {
     return std::nullopt;
   }
 
-  // Read response from the main connection.  Group telegrams may arrive
-  // interleaved — process them inline and continue reading.
+  // Read response from the cache connection (plain, no group socket).
   while (true) {
-    auto raw_msg = try_extract_message(impl_->read_buffer_);
+    auto raw_msg = try_extract_message(impl_->cache_read_buffer_);
     if (raw_msg.has_value()) {
-      shrink_if_large(impl_->read_buffer_);
+      shrink_if_large(impl_->cache_read_buffer_);
       uint16_t resp_type = 0;
       std::vector<uint8_t> resp_data;
       if (!parse_eibd_message(*raw_msg, resp_type, resp_data)) {
-        continue;
-      }
-
-      // Handle interleaved telegrams
-      if (resp_type == EibMessageType::APDU_PACKET && resp_data.size() >= 6) {
-        impl_->telegram_count_++;
-        continue;
-      }
-      if (resp_type == EibMessageType::GROUP_PACKET && resp_data.size() >= 6) {
-        impl_->telegram_count_++;
         continue;
       }
 
@@ -669,7 +642,7 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
     }
 
     struct pollfd pfd = {};
-    pfd.fd = impl_->fd;
+    pfd.fd = impl_->cache_fd_;
     pfd.events = POLLIN;
     pfd.revents = 0;
 
@@ -688,20 +661,10 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
     }
 
     std::array<uint8_t, 4096> tmp{};
-    ssize_t n = ::read(impl_->fd, tmp.data(), tmp.size());
+    ssize_t n = ::read(impl_->cache_fd_, tmp.data(), tmp.size());
     if (n > 0) {
-      size_t new_size = impl_->read_buffer_.size() + static_cast<size_t>(n);
-      if (new_size > kMaxReadBufferSize) {
-        size_t excess = new_size - kMaxReadBufferSize;
-        if (excess >= impl_->read_buffer_.size()) {
-          impl_->read_buffer_.clear();
-        } else {
-          impl_->read_buffer_.erase(impl_->read_buffer_.begin(),
-                                    impl_->read_buffer_.begin() + static_cast<ptrdiff_t>(excess));
-        }
-      }
-      impl_->read_buffer_.insert(impl_->read_buffer_.end(), tmp.data(),
-                                 &tmp[static_cast<size_t>(n)]);
+      impl_->cache_read_buffer_.insert(impl_->cache_read_buffer_.end(), tmp.data(),
+                                       &tmp[static_cast<size_t>(n)]);
       continue;
     }
     if (n == 0) {
