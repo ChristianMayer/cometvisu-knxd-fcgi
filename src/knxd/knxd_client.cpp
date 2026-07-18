@@ -21,14 +21,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
-#include <iostream>
 #include <mutex>
 #include <queue>
-#include <stdexcept>
 #include <utility>
 
 #include "../util/debug_log.h"
@@ -38,6 +36,20 @@
 namespace cvknxd {
 
 struct KnxdClient::Impl {
+  Impl() = default;
+  ~Impl() {
+    if (fd >= 0) {
+      ::close(fd);
+    }
+    if (cache_fd_ >= 0) {
+      ::close(cache_fd_);
+    }
+  }
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
+  Impl(Impl&&) = delete;
+  Impl& operator=(Impl&&) = delete;
+
   int fd = -1;
   int cache_fd_ = -1;  // separate connection for cache operations
   bool group_socket_open = false;
@@ -68,15 +80,6 @@ struct KnxdClient::Impl {
   // cache_mutex) and read by poll_group_telegram (under mutex).
   // recursive_mutex because disconnect() and reconnect() may nest calls.
   mutable std::recursive_mutex telegram_queue_mutex;
-
-  ~Impl() {
-    if (fd >= 0) {
-      ::close(fd);
-    }
-    if (cache_fd_ >= 0) {
-      ::close(cache_fd_);
-    }
-  }
 };
 
 KnxdClient::KnxdClient() : impl_(std::make_unique<Impl>()) {}
@@ -94,15 +97,17 @@ bool KnxdClient::connect(std::string_view socket_path) {
   }
 
   impl_->fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (impl_->fd < 0)
+  if (impl_->fd < 0) {
     return false;
+  }
 
-  struct sockaddr_un addr;
+  struct sockaddr_un addr {};
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
   // Copy path safely
-  if (socket_path.size() >= sizeof(addr.sun_path))
+  if (socket_path.size() >= sizeof(addr.sun_path)) {
     return false;
+  }
   std::memcpy(addr.sun_path, socket_path.data(), socket_path.size());
 
   // Use non-blocking connect with timeout to avoid hanging indefinitely
@@ -111,6 +116,7 @@ bool KnxdClient::connect(std::string_view socket_path) {
     ::fcntl(impl_->fd, F_SETFL, flags | O_NONBLOCK);
   }
 
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
   int ret = ::connect(impl_->fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
   if (ret < 0 && errno != EINPROGRESS) {
     ::close(impl_->fd);
@@ -120,10 +126,9 @@ bool KnxdClient::connect(std::string_view socket_path) {
 
   if (ret < 0) {
     // Connection in progress — wait with timeout
-    struct pollfd pfd;
+    struct pollfd pfd {};
     pfd.fd = impl_->fd;
     pfd.events = POLLOUT;
-    pfd.revents = 0;
     int poll_ret = ::poll(&pfd, 1, 5000);  // 5 second timeout
     if (poll_ret <= 0) {
       ::close(impl_->fd);
@@ -169,8 +174,9 @@ void KnxdClient::disconnect() {
   impl_->read_buffer_.clear();
   impl_->cache_read_buffer_.clear();
   // Clear pre-counted telegram queue
-  while (!impl_->pre_counted_telegrams_.empty())
+  while (!impl_->pre_counted_telegrams_.empty()) {
     impl_->pre_counted_telegrams_.pop();
+  }
   // Note: socket_path_ and write_only_ are preserved for reconnect
 }
 
@@ -185,8 +191,9 @@ bool KnxdClient::reconnect() {
   std::lock_guard<std::recursive_mutex> cache_lock(impl_->cache_mutex);
   std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
 
-  if (impl_->socket_path_.empty())
+  if (impl_->socket_path_.empty()) {
     return false;  // never connected, nothing to reconnect to
+  }
 
   // Disconnect any stale state first
   if (impl_->fd >= 0) {
@@ -200,12 +207,14 @@ bool KnxdClient::reconnect() {
   impl_->group_socket_open = false;
   impl_->read_buffer_.clear();
   impl_->cache_read_buffer_.clear();
-  while (!impl_->pre_counted_telegrams_.empty())
+  while (!impl_->pre_counted_telegrams_.empty()) {
     impl_->pre_counted_telegrams_.pop();
+  }
 
   // Re-establish connection
-  if (!connect(impl_->socket_path_))
+  if (!connect(impl_->socket_path_)) {
     return false;
+  }
 
   // Re-open group socket with previous write_only setting
   if (!open_group_socket(impl_->write_only_)) {
@@ -224,26 +233,28 @@ namespace {
 /// Write all bytes to socket. Handles EAGAIN in non-blocking mode by polling.
 /// Returns true if all bytes were written.
 bool write_all(int fd, const uint8_t* data, size_t len) {
-  while (len > 0) {
-    ssize_t written = ::write(fd, data, len);
+  size_t offset = 0;
+  while (offset < len) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    ssize_t written = ::write(fd, &data[offset], len - offset);
     if (written < 0) {
-      if (errno == EINTR)
+      if (errno == EINTR) {
         continue;
+      }
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         // Socket buffer full in non-blocking mode — wait for writability
-        struct pollfd pfd;
+        struct pollfd pfd {};
         pfd.fd = fd;
         pfd.events = POLLOUT;
-        pfd.revents = 0;
         int ret = ::poll(&pfd, 1, 5000);  // 5 second timeout
-        if (ret <= 0)
+        if (ret <= 0) {
           return false;  // timeout or error
-        continue;        // retry write
+        }
+        continue;  // retry write
       }
       return false;
     }
-    data += written;
-    len -= static_cast<size_t>(written);
+    offset += static_cast<size_t>(written);
   }
   return true;
 }
@@ -252,7 +263,9 @@ bool write_all(int fd, const uint8_t* data, size_t len) {
 /// size or more than 64 KB of waste).  Prevents unbounded memory retention on
 /// long-running embedded systems after transient traffic spikes.
 inline void shrink_if_large(std::vector<uint8_t>& buf) {
-  if (buf.capacity() > buf.size() * 4 || (buf.capacity() - buf.size()) > 64 * 1024) {
+  // NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
+  if (buf.capacity() > static_cast<size_t>(buf.size()) * 4 ||
+      (buf.capacity() - buf.size()) > 64 * 1024) {
     buf.shrink_to_fit();
   }
 }
@@ -277,8 +290,8 @@ std::optional<std::vector<uint8_t>> read_message(int fd, std::vector<uint8_t>& b
     }
 
     // Need more data — read from socket
-    uint8_t tmp[4096];
-    ssize_t n = ::read(fd, tmp, sizeof(tmp));
+    std::array<uint8_t, 4096> tmp{};
+    ssize_t n = ::read(fd, tmp.data(), tmp.size());
     if (n > 0) {
       // Enforce maximum buffer size to prevent unbounded memory growth.
       // If the buffer would exceed the limit, discard the oldest data first.
@@ -293,7 +306,7 @@ std::optional<std::vector<uint8_t>> read_message(int fd, std::vector<uint8_t>& b
           buffer.erase(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(excess));
         }
       }
-      buffer.insert(buffer.end(), tmp, tmp + n);
+      buffer.insert(buffer.end(), tmp.data(), &tmp[static_cast<size_t>(n)]);
       // Loop back to try parsing again with new data
       continue;
     }
@@ -316,8 +329,9 @@ std::optional<std::vector<uint8_t>> read_message(int fd, std::vector<uint8_t>& b
 bool KnxdClient::open_group_socket(bool write_only) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
 
-  if (!is_connected())
+  if (!is_connected()) {
     return false;
+  }
 
   impl_->write_only_ = write_only;
 
@@ -326,18 +340,21 @@ bool KnxdClient::open_group_socket(bool write_only) {
   DebugLog::knxd_send("open_group_socket", "-",
                       write_only ? "write_only=true" : "write_only=false");
 
-  if (!write_all(impl_->fd, msg.data(), msg.size()))
+  if (!write_all(impl_->fd, msg.data(), msg.size())) {
     return false;
+  }
 
   // Read response
   auto resp = read_message(impl_->fd, impl_->read_buffer_);
-  if (!resp)
+  if (!resp) {
     return false;
+  }
 
-  uint16_t resp_type;
+  uint16_t resp_type = 0;
   std::vector<uint8_t> resp_data;
-  if (!parse_eibd_message(*resp, resp_type, resp_data))
+  if (!parse_eibd_message(*resp, resp_type, resp_data)) {
     return false;
+  }
 
   // Success: response is OPEN_GROUPCON with no error
   impl_->group_socket_open = (resp_type == EibMessageType::OPEN_GROUPCON);
@@ -350,8 +367,9 @@ bool KnxdClient::send_group_packet(uint16_t group_addr, const std::vector<uint8_
   // First attempt: try with current connection
   if (!is_connected() || !impl_->group_socket_open) {
     // Attempt transparent reconnect once
-    if (!reconnect())
+    if (!reconnect()) {
       return false;
+    }
   }
 
   const auto addr_str = KnxGroupAddress::from_eibaddr(group_addr).to_string();
@@ -359,13 +377,15 @@ bool KnxdClient::send_group_packet(uint16_t group_addr, const std::vector<uint8_
   DebugLog::knxd_send("group_packet", addr_str, "apdu=" + hex_encode(apdu.data(), apdu.size()));
 
   auto msg = build_group_packet(group_addr, apdu);
-  if (write_all(impl_->fd, msg.data(), msg.size()))
+  if (write_all(impl_->fd, msg.data(), msg.size())) {
     return true;
+  }
 
   // Write failed (e.g. EPIPE after knxd restart while fd was still valid).
   // Reconnect and retry once.
-  if (!reconnect())
+  if (!reconnect()) {
     return false;
+  }
 
   DebugLog::knxd_send("group_packet", addr_str,
                       "apdu=" + hex_encode(apdu.data(), apdu.size()) + " (retry)");
@@ -385,8 +405,9 @@ void KnxdClient::invalidate_cache() {
   impl_->cache_read_buffer_.clear();
   // Clear pre-counted telegram queue — these were parsed from the old
   // cache connection and are no longer valid after reconnection.
-  while (!impl_->pre_counted_telegrams_.empty())
+  while (!impl_->pre_counted_telegrams_.empty()) {
     impl_->pre_counted_telegrams_.pop();
+  }
 }
 
 int* KnxdClient::ensure_cache_connection() {
@@ -424,8 +445,9 @@ int* KnxdClient::ensure_cache_connection() {
       impl_->cache_read_buffer_.clear();
       {
         std::lock_guard<std::recursive_mutex> queue_lock(impl_->telegram_queue_mutex);
-        while (!impl_->pre_counted_telegrams_.empty())
+        while (!impl_->pre_counted_telegrams_.empty()) {
           impl_->pre_counted_telegrams_.pop();
+        }
       }
       return &impl_->cache_fd_;
     }
@@ -433,10 +455,11 @@ int* KnxdClient::ensure_cache_connection() {
 
   // Either no existing connection or the old one was stale — open a new one.
   impl_->cache_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (impl_->cache_fd_ < 0)
+  if (impl_->cache_fd_ < 0) {
     return nullptr;
+  }
 
-  struct sockaddr_un addr;
+  struct sockaddr_un addr {};
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
   if (path.size() >= sizeof(addr.sun_path)) {
@@ -446,6 +469,7 @@ int* KnxdClient::ensure_cache_connection() {
   }
   std::memcpy(addr.sun_path, path.data(), path.size());
 
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
   if (::connect(impl_->cache_fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
     ::close(impl_->cache_fd_);
     impl_->cache_fd_ = -1;
@@ -473,8 +497,9 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
     connection_ok = false;  // assume failure until we're past the initial send
 
     auto* cache_fd = ensure_cache_connection();
-    if (cache_fd == nullptr)
+    if (cache_fd == nullptr) {
       return std::nullopt;  // can't connect at all — retryable
+    }
 
     // Clear any residual data from previous cache operations (e.g.
     // cache_last_updates_2) that share this buffer. Without this,
@@ -488,8 +513,9 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
     const uint16_t msg_type =
         nowait ? EibMessageType::CACHE_READ_NOWAIT : EibMessageType::CACHE_READ;
     const auto msg = nowait ? build_cache_read_nowait(group_addr) : build_cache_read(group_addr);
-    if (!write_all(*cache_fd, msg.data(), msg.size()))
+    if (!write_all(*cache_fd, msg.data(), msg.size())) {
       return std::nullopt;  // write failed — connection likely broken, retryable
+    }
 
     // If we got here, the initial send succeeded — the connection is alive.
     connection_ok = true;
@@ -505,7 +531,7 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
       auto raw_msg = try_extract_message(impl_->cache_read_buffer_);
       if (raw_msg.has_value()) {
         shrink_if_large(impl_->cache_read_buffer_);
-        uint16_t resp_type;
+        uint16_t resp_type = 0;
         std::vector<uint8_t> resp_data;
         if (!parse_eibd_message(*raw_msg, resp_type, resp_data)) {
           continue;  // malformed message, try next
@@ -523,12 +549,14 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
           auto apdu = std::vector<uint8_t>(resp_data.begin() + 4, resp_data.end());
 
           // Strip the APDU header and filter out Read APDUs.
-          ApduType apdu_type;
+          ApduType apdu_type{};
           std::vector<uint8_t> value_data;
-          if (!parse_apdu(apdu, apdu_type, value_data))
+          if (!parse_apdu(apdu, apdu_type, value_data)) {
             return std::nullopt;
-          if (apdu_type == ApduType::Read)
+          }
+          if (apdu_type == ApduType::Read) {
             return std::nullopt;
+          }
 
           DebugLog::knxd_recv("cache_read", addr_str,
                               hex_encode(value_data.data(), value_data.size()));
@@ -543,8 +571,9 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
       auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                            deadline - std::chrono::steady_clock::now())
                            .count();
-      if (remaining <= 0)
+      if (remaining <= 0) {
         return std::nullopt;
+      }
 
       struct pollfd pfd = {};
       pfd.fd = *cache_fd;
@@ -553,19 +582,22 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
 
       int poll_ret = ::poll(&pfd, 1, static_cast<int>(remaining));
       if (poll_ret < 0) {
-        if (errno == EINTR)
+        if (errno == EINTR) {
           continue;
+        }
         return std::nullopt;  // poll error — connection may be broken
       }
-      if (poll_ret == 0)
+      if (poll_ret == 0) {
         return std::nullopt;  // timeout — not a connection error
+      }
 
-      if ((pfd.revents & (POLLHUP | POLLERR)) != 0)
+      if ((pfd.revents & (POLLHUP | POLLERR)) != 0) {
         return std::nullopt;  // connection hangup/error — retryable
+      }
 
       // Read data from cache socket
-      uint8_t tmp[4096];
-      ssize_t n = ::read(*cache_fd, tmp, sizeof(tmp));
+      std::array<uint8_t, 4096> tmp{};
+      ssize_t n = ::read(*cache_fd, tmp.data(), tmp.size());
       if (n > 0) {
         size_t new_size = impl_->cache_read_buffer_.size() + static_cast<size_t>(n);
         if (new_size > kMaxReadBufferSize) {
@@ -578,13 +610,16 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
                 impl_->cache_read_buffer_.begin() + static_cast<ptrdiff_t>(excess));
           }
         }
-        impl_->cache_read_buffer_.insert(impl_->cache_read_buffer_.end(), tmp, tmp + n);
+        impl_->cache_read_buffer_.insert(impl_->cache_read_buffer_.end(), tmp.data(),
+                                         &tmp[static_cast<size_t>(n)]);
         continue;
       }
-      if (n == 0)
+      if (n == 0) {
         return std::nullopt;  // EOF — connection closed, retryable
-      if (errno == EINTR)
+      }
+      if (errno == EINTR) {
         continue;
+      }
       return std::nullopt;  // read error
     }
   };
@@ -592,8 +627,9 @@ std::optional<std::vector<uint8_t>> KnxdClient::cache_read(uint16_t group_addr, 
   // First attempt
   bool first_ok = false;
   auto result = attempt(first_ok);
-  if (result.has_value())
+  if (result.has_value()) {
     return result;
+  }
 
   // Only retry if the first attempt failed due to a connection error
   // (couldn't connect, write failed, poll error, EOF, POLLHUP).
@@ -619,11 +655,13 @@ uint64_t KnxdClient::get_telegram_count() const {
 
 void KnxdClient::set_nonblocking(bool enable) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  if (impl_->fd < 0)
+  if (impl_->fd < 0) {
     return;
+  }
   int flags = ::fcntl(impl_->fd, F_GETFL, 0);
-  if (flags < 0)
+  if (flags < 0) {
     return;
+  }
   if (enable) {
     ::fcntl(impl_->fd, F_SETFL, flags | O_NONBLOCK);
   } else {
@@ -636,8 +674,9 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
 
   if (!is_connected()) {
     // Attempt transparent reconnect once
-    if (!reconnect())
+    if (!reconnect()) {
       return false;
+    }
   }
 
   // Check pre-counted queue first (telegrams already parsed and counted
@@ -672,14 +711,16 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
         msg = read_message(impl_->fd, impl_->read_buffer_);
       }
     }
-    if (!msg)
+    if (!msg) {
       return false;
+    }
   }
 
-  uint16_t msg_type;
+  uint16_t msg_type = 0;
   std::vector<uint8_t> msg_data;
-  if (!parse_eibd_message(*msg, msg_type, msg_data))
+  if (!parse_eibd_message(*msg, msg_type, msg_data)) {
     return false;
+  }
 
   if (msg_type == EibMessageType::APDU_PACKET && msg_data.size() >= 6) {
     // Format: src_pa(2) + dst_ga(2) + apdu...
@@ -723,16 +764,18 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
 
   auto attempt = [&]() -> std::optional<LastUpdatesResult> {
     auto* cache_fd = ensure_cache_connection();
-    if (cache_fd == nullptr)
+    if (cache_fd == nullptr) {
       return std::nullopt;
+    }
 
     auto msg = build_cache_last_updates_2(start, timeout_sec);
     DebugLog::knxd_send(
         "cache_last_updates_2", "",
         "start=" + std::to_string(start) + " timeout=" + std::to_string(timeout_sec));
 
-    if (!write_all(*cache_fd, msg.data(), msg.size()))
+    if (!write_all(*cache_fd, msg.data(), msg.size())) {
       return std::nullopt;  // write failed — connection likely broken
+    }
 
     // Read response from the cache connection.
     // The deadline is shared across retry attempts so we don't exceed the
@@ -741,7 +784,7 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
       auto raw_msg = try_extract_message(impl_->cache_read_buffer_);
       if (raw_msg.has_value()) {
         shrink_if_large(impl_->cache_read_buffer_);
-        uint16_t resp_type;
+        uint16_t resp_type = 0;
         std::vector<uint8_t> resp_data;
         if (!parse_eibd_message(*raw_msg, resp_type, resp_data)) {
           continue;
@@ -764,8 +807,9 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
       auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                            deadline - std::chrono::steady_clock::now())
                            .count();
-      if (remaining <= 0)
+      if (remaining <= 0) {
         return std::nullopt;  // timeout — not a connection error
+      }
 
       struct pollfd pfd = {};
       pfd.fd = *cache_fd;
@@ -774,18 +818,22 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
 
       int poll_ret = ::poll(&pfd, 1, static_cast<int>(remaining));
       if (poll_ret < 0) {
-        if (errno == EINTR)
+        if (errno == EINTR) {
           continue;
+        }
         return std::nullopt;  // poll error — connection may be broken
       }
-      if (poll_ret == 0)
+      if (poll_ret == 0) {
         return std::nullopt;  // timeout — not a connection error
+      }
 
-      if ((pfd.revents & (POLLHUP | POLLERR)) != 0)
+      if ((pfd.revents & (POLLHUP | POLLERR)) != 0) {
         return std::nullopt;  // connection hangup — retryable
+      }
 
-      uint8_t tmp[4096];
-      ssize_t n = ::read(*cache_fd, tmp, sizeof(tmp));
+      // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays-modern-cpp)
+      std::array<uint8_t, 4096> tmp{};
+      ssize_t n = ::read(*cache_fd, tmp.data(), tmp.size());
       if (n > 0) {
         size_t new_size = impl_->cache_read_buffer_.size() + static_cast<size_t>(n);
         if (new_size > kMaxReadBufferSize) {
@@ -798,21 +846,25 @@ std::optional<LastUpdatesResult> KnxdClient::cache_last_updates_2(uint32_t start
                 impl_->cache_read_buffer_.begin() + static_cast<ptrdiff_t>(excess));
           }
         }
-        impl_->cache_read_buffer_.insert(impl_->cache_read_buffer_.end(), tmp, tmp + n);
+        impl_->cache_read_buffer_.insert(impl_->cache_read_buffer_.end(), tmp.data(),
+                                         &tmp[static_cast<size_t>(n)]);
         continue;
       }
-      if (n == 0)
+      if (n == 0) {
         return std::nullopt;  // EOF — connection closed, retryable
-      if (errno == EINTR)
+      }
+      if (errno == EINTR) {
         continue;
+      }
       return std::nullopt;  // read error
     }
   };
 
   // First attempt
   auto result = attempt();
-  if (result.has_value())
+  if (result.has_value()) {
     return result;
+  }
 
   // Retry once — ensure_cache_connection always opens a fresh connection,
   // so a second attempt may succeed if the first hit a transient error.

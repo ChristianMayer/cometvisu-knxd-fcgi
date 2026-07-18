@@ -18,6 +18,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -28,7 +29,6 @@
 #include <vector>
 
 #include "knxd/knxd_client.h"
-#include "knxd/knxd_protocol.h"
 
 using namespace cvknxd;
 
@@ -37,7 +37,7 @@ namespace {
 /// Generate a unique socket path for this test run.
 std::string make_temp_socket_path() {
   const char* tmpdir = getenv("TMPDIR");
-  if (tmpdir == nullptr || tmpdir[0] == '\0') {
+  if (tmpdir == nullptr || *tmpdir == '\0') {
     tmpdir = "/tmp";
   }
   std::string tmpl = std::string(tmpdir) + "/knxd-concurrency-test-XXXXXX";
@@ -60,18 +60,21 @@ class FakeKnxdServer {
 public:
   FakeKnxdServer() {
     socket_path_ = make_temp_socket_path();
-    if (socket_path_.empty())
+    if (socket_path_.empty()) {
       return;
+    }
 
     listen_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (listen_fd_ < 0)
+    if (listen_fd_ < 0) {
       return;
+    }
 
-    struct sockaddr_un addr{};
+    struct sockaddr_un addr {};
     addr.sun_family = AF_UNIX;
     size_t path_len = socket_path_.copy(addr.sun_path, sizeof(addr.sun_path) - 1);
     addr.sun_path[path_len] = '\0';
 
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     if (::bind(listen_fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
       ::close(listen_fd_);
       listen_fd_ = -1;
@@ -87,17 +90,24 @@ public:
     accept_thread_ = std::thread(&FakeKnxdServer::accept_loop, this);
   }
 
+  FakeKnxdServer(const FakeKnxdServer&) = delete;
+  FakeKnxdServer& operator=(const FakeKnxdServer&) = delete;
+  FakeKnxdServer(FakeKnxdServer&&) = delete;
+  FakeKnxdServer& operator=(FakeKnxdServer&&) = delete;
+
   ~FakeKnxdServer() {
     shutdown_.store(true);
     // Connect to ourselves to unblock accept()
     if (!socket_path_.empty()) {
       int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
       if (fd >= 0) {
-        struct sockaddr_un addr{};
+        struct sockaddr_un addr {};
         addr.sun_family = AF_UNIX;
         size_t path_len = socket_path_.copy(addr.sun_path, sizeof(addr.sun_path) - 1);
         addr.sun_path[path_len] = '\0';
-        ::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        int conn_ret = ::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+        (void)conn_ret;
         ::close(fd);
       }
     }
@@ -120,9 +130,11 @@ private:
   static bool read_exact(int fd, uint8_t* buf, size_t len) {
     size_t off = 0;
     while (off < len) {
-      ssize_t n = ::read(fd, buf + off, len - off);
-      if (n <= 0)
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+      ssize_t n = ::read(fd, &buf[off], len - off);
+      if (n <= 0) {
         return false;
+      }
       off += static_cast<size_t>(n);
     }
     return true;
@@ -132,9 +144,11 @@ private:
   static bool write_all(int fd, const uint8_t* data, size_t len) {
     size_t off = 0;
     while (off < len) {
-      ssize_t n = ::write(fd, data + off, len - off);
-      if (n <= 0)
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+      ssize_t n = ::write(fd, &data[off], len - off);
+      if (n <= 0) {
         return false;
+      }
       off += static_cast<size_t>(n);
     }
     return true;
@@ -147,28 +161,31 @@ private:
     // Read the first message to determine if this is a main or cache connection
     while (!shutdown_.load()) {
       // Read 2-byte length prefix
-      uint8_t len_buf[2];
-      if (!read_exact(fd, len_buf, 2))
+      std::array<uint8_t, 2> len_buf{};
+      if (!read_exact(fd, len_buf.data(), 2)) {
         break;
+      }
       uint16_t payload_len = static_cast<uint16_t>((len_buf[0] << 8) | len_buf[1]);
 
       // Read payload
       std::vector<uint8_t> payload(payload_len);
-      if (payload_len > 0 && !read_exact(fd, payload.data(), payload_len))
+      if (payload_len > 0 && !read_exact(fd, payload.data(), payload_len)) {
         break;
+      }
 
-      if (payload_len < 2)
+      if (payload_len < 2) {
         continue;
+      }
 
       uint16_t msg_type = static_cast<uint16_t>((payload[0] << 8) | payload[1]);
 
       if (msg_type == EIB_OPEN_GROUPCON) {
         // Respond with success: same type, empty payload.
         // Wire format: [len:2][type:2].  len=2, payload is the 2-byte type.
-        uint8_t resp[] = {0x00, 0x02,  // payload length = 2
-                          static_cast<uint8_t>((msg_type >> 8) & 0xFF),
-                          static_cast<uint8_t>(msg_type & 0xFF)};
-        write_all(fd, resp, sizeof(resp));
+        std::array<uint8_t, 4> resp = {0x00, 0x02,  // payload length = 2
+                                       static_cast<uint8_t>((msg_type >> 8) & 0xFF),
+                                       static_cast<uint8_t>(msg_type & 0xFF)};
+        write_all(fd, resp.data(), resp.size());
         // After OPEN_GROUPCON, the main connection stays open for GROUP_PACKET.
         continue;
       }
@@ -189,13 +206,15 @@ private:
         //
         // Read more messages until the client closes the connection.
         while (!shutdown_.load()) {
-          uint8_t dummy[2];
-          if (!read_exact(fd, dummy, 2))
+          std::array<uint8_t, 2> dummy{};
+          if (!read_exact(fd, dummy.data(), 2)) {
             break;
+          }
           uint16_t pl = static_cast<uint16_t>((dummy[0] << 8) | dummy[1]);
           std::vector<uint8_t> p(pl);
-          if (pl > 0 && !read_exact(fd, p.data(), pl))
+          if (pl > 0 && !read_exact(fd, p.data(), pl)) {
             break;
+          }
         }
         break;
       }
@@ -211,8 +230,9 @@ private:
     while (!shutdown_.load()) {
       int client = ::accept(listen_fd_, nullptr, nullptr);
       if (client < 0) {
-        if (shutdown_.load())
+        if (shutdown_.load()) {
           break;
+        }
         continue;
       }
       // Handle each client in a separate thread (detached)
@@ -244,7 +264,9 @@ protected:
 
   void TearDown() override { client_.disconnect(); }
 
+  // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
   FakeKnxdServer fake_knxd_;
+  // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
   KnxdClient client_;
 };
 
