@@ -129,10 +129,12 @@ void SharedGroupCache::push(uint16_t addr, const std::vector<uint8_t>& value) {
   }
 
   // Increment the raw counter and store the wrapped position so the client-facing
-  // index `i` stays bounded.  Wrapped values are 0-based (0..kPositionModulus-1)
+  // index `i` stays bounded.  Wrapped values are 1-based (1..kPositionModulus-1, 0 at wrap)
   // so they match the position() return value and the client's `i` parameter.
+  // Using (raw_pos + 1) % M ensures pushed_at == position() for a single-entry push,
+  // so get_delta(since_pos) correctly identifies entries newer than since_pos.
   uint32_t raw_pos = data_->position.fetch_add(1);
-  uint32_t wrapped_pos = raw_pos % kPositionModulus;
+  uint32_t wrapped_pos = (raw_pos + 1) % kPositionModulus;
 
   SharedCacheEntry entry{};
   entry.addr = addr;
