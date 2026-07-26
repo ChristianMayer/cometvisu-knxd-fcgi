@@ -985,3 +985,81 @@ TEST_F(ReadHandlerTest, NoTParameterDoesNotSendGroupValueRead) {
   auto sent = knxd_.sent_packets();
   EXPECT_TRUE(sent.empty());
 }
+
+// ================================================================
+// Position wrapping
+// ================================================================
+
+/// The index `i` wraps at kPositionModulus (0-based, max = M-1 = 99,999).
+/// After M pushes i resets from M-1 to 0.
+TEST_F(ReadHandlerTest, IndexWrapsAtModulus) {
+  // Push M-1 entries: position climbs to M-1 = 99,999.
+  for (uint32_t i = 0; i < kPositionModulus - 1; ++i) {
+    cache_.push(0x0A03, {static_cast<uint8_t>(i & 0xFF)});
+  }
+
+  ReadHandler handler(cache_, knxd_, sessions_);
+  auto r = handler.handle("a=1/2/3&i=0&t=0");
+  EXPECT_EQ(r.http_status, 200);
+  EXPECT_NE(r.body.find("\"i\":" + std::to_string(kPositionModulus - 1)), std::string::npos)
+      << "i should be M-1 = 99,999 before wrap";
+
+  // One more push wraps the position to 0.
+  cache_.push(0x0A03, {0x42});
+
+  ReadHandler handler2(cache_, knxd_, sessions_);
+  auto r2 = handler2.handle("a=1/2/3&i=0&t=0");
+  EXPECT_EQ(r2.http_status, 200);
+  EXPECT_NE(r2.body.find("\"i\":0"), std::string::npos) << "i must wrap to 0 after M pushes";
+}
+
+/// Epoch mismatch: client from early in the epoch, server near M → full refresh.
+TEST_F(ReadHandlerTest, EpochMismatchReturnsCurrentValues) {
+  // Push M-3 entries: raw 0..M-4, pushed_at 0..M-4. position = M-3.
+  for (uint32_t i = 0; i < kPositionModulus - 3; ++i) {
+    cache_.push(0x0A03, {static_cast<uint8_t>(i & 0xFF)});
+  }
+
+  // Push current value: raw = M-3, pushed_at = M-3. position = M-2.
+  cache_.push(0x0A03, {0x42});
+
+  // Client sends i=10 (early epoch): epoch_distance = M-12 >= M/2 → epoch mismatch.
+  ReadHandler handler(cache_, knxd_, sessions_);
+  auto r = handler.handle("a=1/2/3&i=10&t=0");
+
+  EXPECT_EQ(r.http_status, 200);
+  EXPECT_NE(r.body.find("\"42\""), std::string::npos)
+      << "Epoch mismatch must return current value via full refresh";
+  EXPECT_NE(r.body.find("\"i\":" + std::to_string(kPositionModulus - 2)), std::string::npos)
+      << "Position must reflect current state (M-2)";
+}
+
+/// Position never goes backward across the wrap boundary.
+TEST_F(ReadHandlerTest, IndexMonotonicAcrossWrap) {
+  // Push M-1 entries: position = M-1 = 99,999.
+  for (uint32_t i = 0; i < kPositionModulus - 1; ++i) {
+    cache_.push(0x0A03, {static_cast<uint8_t>(i & 0xFF)});
+  }
+
+  ReadHandler h1(cache_, knxd_, sessions_);
+  auto r1 = h1.handle("a=1/2/3&i=0&t=0");
+  uint32_t i1 = [&]() {
+    auto p = r1.body.find("\"i\":");
+    return static_cast<uint32_t>(std::stoul(r1.body.substr(p + 4)));
+  }();
+  EXPECT_EQ(i1, kPositionModulus - 1) << "i should be M-1 = 99,999 before wrap";
+
+  // Wrap then push again
+  cache_.push(0x0A03, {0x42});  // wrap to 0
+  cache_.push(0x0A03, {0x99});  // advance to 1
+
+  ReadHandler h2(cache_, knxd_, sessions_);
+  auto r2 = h2.handle("a=1/2/3&i=" + std::to_string(i1) + "&t=0");
+  uint32_t i2 = [&]() {
+    auto p = r2.body.find("\"i\":");
+    return static_cast<uint32_t>(std::stoul(r2.body.substr(p + 4)));
+  }();
+
+  // Wrapped position advances: M-1 → 0 → 1
+  EXPECT_EQ(i2, 1) << "i must advance: M-1 → 0 → 1";
+}

@@ -20,7 +20,6 @@
 
 #include <cerrno>
 #include <cstring>
-#include <new>
 
 namespace cvknxd {
 
@@ -129,13 +128,17 @@ void SharedGroupCache::push(uint16_t addr, const std::vector<uint8_t>& value) {
     return;
   }
 
-  uint32_t new_pos = data_->position.fetch_add(1) + 1;
+  // Increment the raw counter and store the wrapped position so the client-facing
+  // index `i` stays bounded.  Wrapped values are 0-based (0..kPositionModulus-1)
+  // so they match the position() return value and the client's `i` parameter.
+  uint32_t raw_pos = data_->position.fetch_add(1);
+  uint32_t wrapped_pos = raw_pos % kPositionModulus;
 
   SharedCacheEntry entry{};
   entry.addr = addr;
   entry.value_len = static_cast<uint16_t>(std::min(value.size(), kMaxSharedValueBytes));
   entry.timestamp = static_cast<uint32_t>(std::time(nullptr));
-  entry.pushed_at = new_pos;
+  entry.pushed_at = wrapped_pos;
   std::memcpy(entry.value, value.data(), entry.value_len);
 
   insert_locked(addr, entry);
@@ -168,10 +171,10 @@ std::optional<std::vector<uint8_t>> SharedGroupCache::get(uint16_t addr, int max
     if (max_age_sec >= 0) {
       auto now = static_cast<uint32_t>(std::time(nullptr));
       if (now - e.timestamp < static_cast<uint32_t>(max_age_sec)) {
-        result.emplace(e.value, e.value + e.value_len);
+        result.emplace(std::begin(e.value), std::next(std::begin(e.value), e.value_len));
       }
     } else {
-      result.emplace(e.value, e.value + e.value_len);
+      result.emplace(std::begin(e.value), std::next(std::begin(e.value), e.value_len));
     }
   }
 
@@ -194,10 +197,21 @@ SharedGroupCache::Delta SharedGroupCache::get_delta(uint32_t since_pos,
     return delta;
   }
 
-  delta.position = data_->position.load();
+  // Current wrapped position (0-based, wraps at kPositionModulus).
+  delta.position = data_->position.load() % kPositionModulus;
 
-  // Epoch detection: if client's position exceeds current, clamp to 0.
-  uint32_t effective_since = (since_pos > delta.position) ? 0 : since_pos;
+  // Modular distance from the client's last-seen position to the current position.
+  // This tells us how far ahead (in modular space) the cache has advanced since
+  // the client last polled.
+  uint32_t epoch_distance = (delta.position - since_pos + kPositionModulus) % kPositionModulus;
+
+  // Epoch detection: if the distance is >= half the modulus, the client is from
+  // a previous wrap-around epoch.  In that case we return all current values for
+  // the subscribed addresses (full refresh) instead of a delta.
+  // Epoch mismatch when the client is more than half the modulus away.
+  // With M=100_000, this threshold = 50_000 entries (~17 min at 50 tps),
+  // far exceeding the 300-second long-poll timeout.
+  bool epoch_mismatch = (since_pos != 0 && epoch_distance >= kPositionModulus / 2);
 
   uint32_t now = static_cast<uint32_t>(std::time(nullptr));
 
@@ -210,13 +224,28 @@ SharedGroupCache::Delta SharedGroupCache::get_delta(uint32_t since_pos,
     if (e.addr != addr) {
       continue;
     }
-    if (e.pushed_at <= effective_since) {
-      continue;
-    }
     if (max_age_sec >= 0 && now - e.timestamp >= static_cast<uint32_t>(max_age_sec)) {
       continue;
     }
-    delta.values[addr] = std::vector<uint8_t>(e.value, e.value + e.value_len);
+
+    if (epoch_mismatch) {
+      // Full refresh: return all subscribed values regardless of pushed_at.
+      delta.values[addr] =
+          std::vector<uint8_t>(std::begin(e.value), std::next(std::begin(e.value), e.value_len));
+    } else {
+      // Normal delta: only include entries newer than since_pos (modular).
+      uint32_t entry_dist = (e.pushed_at - since_pos + kPositionModulus) % kPositionModulus;
+      // An entry is newer if its distance is positive and within epoch_distance.
+      // When since_pos=0 (new client), pushed_at=0 is valid first-push data.
+      if (entry_dist > epoch_distance) {
+        continue;
+      }
+      if (since_pos != 0 && entry_dist == 0) {
+        continue;
+      }
+      delta.values[addr] =
+          std::vector<uint8_t>(std::begin(e.value), std::next(std::begin(e.value), e.value_len));
+    }
   }
 
   ::pthread_mutex_unlock(&data_->mutex);
@@ -251,7 +280,7 @@ bool SharedGroupCache::wait_for_new_data(int timeout_ms) {
   int64_t total_ns =
       static_cast<int64_t>(ts.tv_nsec) + static_cast<int64_t>(timeout_ms) * 1'000'000LL;
   ts.tv_sec += static_cast<time_t>(total_ns / 1'000'000'000LL);
-  ts.tv_nsec = static_cast<long>(total_ns % 1'000'000'000LL);
+  ts.tv_nsec = static_cast<decltype(ts.tv_nsec)>(total_ns % 1'000'000'000LL);
 
   // Wait loop: handles spurious wakeups.
   bool timed_out = false;

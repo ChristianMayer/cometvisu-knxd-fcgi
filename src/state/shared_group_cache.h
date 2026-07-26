@@ -48,6 +48,14 @@ namespace cvknxd {
 /// Maximum number of cache entries (open-addressing hash table).
 inline constexpr size_t kSharedCacheCapacity = 2048;
 
+/// Position modulus — the index `i` wraps at this value to keep the per-request
+/// transmitted bytes small while covering at least 24 hours of full-speed KNX bus
+/// traffic (~50 telegrams/sec).  At 50 tps this gives ~55 hours before the half-range
+/// ambiguity kicks in; at 100 tps ~28 hours.  The half-range rule means a client
+/// that polls at least once every M/2 entries will always get correct deltas.
+/// With the 300-second long-poll timeout this is easily satisfied.
+inline constexpr uint32_t kPositionModulus = 100'000;
+
 /// Maximum KNX APDU payload bytes storable per entry.
 inline constexpr size_t kMaxSharedValueBytes = 14;
 
@@ -121,13 +129,18 @@ public:
     std::unordered_map<uint16_t, std::vector<uint8_t>> values;
     uint32_t position = 0;
   };
-  /// Only entries with pushed_at > since_pos are returned.
+  /// Only entries with pushed_at newer than since_pos are returned (modular comparison).
+  /// If the client is from a previous epoch (modular distance ≥ kPositionModulus / 2),
+  /// all current values for subscribed addresses are returned instead (full refresh).
   /// Called by worker processes.
   [[nodiscard]] Delta get_delta(uint32_t since_pos, const std::set<uint16_t>& subscribed,
                                 int max_age_sec = -1) const;
 
-  /// Current monotonically-increasing position (lock-free).
-  [[nodiscard]] uint32_t position() const { return data_->position.load(); }
+  /// Current position (lock-free, wraps at kPositionModulus).
+  /// Returns the pushed_at of the most recently pushed entry (0-based),
+  /// or 0 if no entries have been pushed yet.  After kPositionModulus
+  /// pushes the position wraps back to 0.
+  [[nodiscard]] uint32_t position() const { return data_->position.load() % kPositionModulus; }
 
   /// Block until new data arrives or timeout expires.
   /// Uses the process-shared condition variable — zero CPU while waiting.
