@@ -143,10 +143,10 @@ TEST_F(GroupCacheTest, EpochMismatchFullRefresh) {
 // ================================================================
 
 TEST_F(GroupCacheTest, DeltaOnlyReturnsChangedAddresses) {
-  // Dummy push at pos 0 so real entries start at pushed_at=1 (0-based).
-  cache_.push(0xFFFF, {0x00});  // dummy at pos 0
-  cache_.push(0x0A03, {0x42});  // A at pos 1
-  cache_.push(0x0B04, {0x01});  // B at pos 2
+  // Dummy push at pushed_at=1 so real entries start at pushed_at=2.
+  cache_.push(0xFFFF, {0x00});  // dummy at pushed_at=1
+  cache_.push(0x0A03, {0x42});  // A at pushed_at=2
+  cache_.push(0x0B04, {0x01});  // B at pushed_at=3
 
   std::set<uint16_t> sub = {0x0A03, 0x0B04};
 
@@ -155,8 +155,8 @@ TEST_F(GroupCacheTest, DeltaOnlyReturnsChangedAddresses) {
   EXPECT_EQ(d0.position, 3);
   EXPECT_EQ(d0.values.size(), 2);
 
-  // since_pos=1: only B changed → only B returned
-  auto d1 = cache_.get_delta(1, sub);
+  // since_pos=2: only B changed → only B returned
+  auto d1 = cache_.get_delta(2, sub);
   EXPECT_EQ(d1.position, 3);
   ASSERT_EQ(d1.values.size(), 1);
   EXPECT_TRUE(d1.values.contains(0x0B04));
@@ -164,32 +164,32 @@ TEST_F(GroupCacheTest, DeltaOnlyReturnsChangedAddresses) {
 }
 
 TEST_F(GroupCacheTest, DeltaReturnsNothingForUnchangedAddress) {
-  cache_.push(0xFFFF, {0x00});  // dummy at pos 0
-  cache_.push(0x0A03, {0x42});  // A at pos 1
-  cache_.push(0x0B04, {0x01});  // B at pos 2 (unrelated)
+  cache_.push(0xFFFF, {0x00});  // dummy at pushed_at=1
+  cache_.push(0x0A03, {0x42});  // A at pushed_at=2
+  cache_.push(0x0B04, {0x01});  // B at pushed_at=3 (unrelated)
 
   std::set<uint16_t> sub = {0x0A03};
-  auto d = cache_.get_delta(1, sub);  // since A's push at pos 1
+  auto d = cache_.get_delta(2, sub);  // since A's push at pushed_at=2
   EXPECT_EQ(d.position, 3);
-  // A hasn't changed since pos 1 → no new entries since pos 2
-  // (B at pos 2 is not subscribed)
+  // A hasn't changed since pushed_at=2 → no new entries
+  // (B at pushed_at=3 is not subscribed)
   EXPECT_TRUE(d.values.empty());
 }
 
 TEST_F(GroupCacheTest, DeltaEmptyWhenPositionUnchanged) {
-  cache_.push(0xFFFF, {0x00});  // dummy at pos 0
-  cache_.push(0x0A03, {0x42});  // A at pos 1
+  cache_.push(0xFFFF, {0x00});  // dummy at pushed_at=1
+  cache_.push(0x0A03, {0x42});  // A at pushed_at=2
   std::set<uint16_t> sub = {0x0A03};
-  auto d = cache_.get_delta(2, sub);  // since_pos = current position → nothing new
+  auto d = cache_.get_delta(2, sub);  // since_pos = A's pushed_at → nothing new
   EXPECT_EQ(d.position, 2);
   EXPECT_TRUE(d.values.empty());
 }
 
 TEST_F(GroupCacheTest, DeltaLatestPositionReported) {
-  cache_.push(0xFFFF, {0x00});  // dummy at pos 0
-  cache_.push(0x0A03, {0x42});  // A at pos 1
-  cache_.push(0x0B04, {0x01});  // B at pos 2
-  cache_.push(0x0C05, {0xFF});  // C at pos 3
+  cache_.push(0xFFFF, {0x00});  // dummy at pushed_at=1
+  cache_.push(0x0A03, {0x42});  // A at pushed_at=2
+  cache_.push(0x0B04, {0x01});  // B at pushed_at=3
+  cache_.push(0x0C05, {0xFF});  // C at pushed_at=4
 
   std::set<uint16_t> sub = {0x0A03, 0x0B04, 0x0C05};
 
@@ -197,21 +197,23 @@ TEST_F(GroupCacheTest, DeltaLatestPositionReported) {
   EXPECT_EQ(d0.position, 4);
   EXPECT_EQ(d0.values.size(), 3);
 
-  auto d1 = cache_.get_delta(1, sub);  // B + C
+  auto d1 = cache_.get_delta(2, sub);  // B + C
   EXPECT_EQ(d1.position, 4);
   EXPECT_EQ(d1.values.size(), 2);
 
-  auto d2 = cache_.get_delta(2, sub);  // only C
+  auto d2 = cache_.get_delta(3, sub);  // only C
   EXPECT_EQ(d2.position, 4);
   EXPECT_EQ(d2.values.size(), 1);
 
-  auto d3 = cache_.get_delta(3, sub);  // nothing
+  auto d3 = cache_.get_delta(4, sub);  // nothing
   EXPECT_EQ(d3.position, 4);
   EXPECT_TRUE(d3.values.empty());
 
-  auto d4 = cache_.get_delta(4, sub);  // past end
+  // since_pos=5 past end → epoch mismatch (since_pos > position, wraps).
+  // Epoch mismatch triggers full refresh → all cached values returned.
+  auto d4 = cache_.get_delta(5, sub);
   EXPECT_EQ(d4.position, 4);
-  EXPECT_TRUE(d4.values.empty());
+  EXPECT_EQ(d4.values.size(), 3);
 }
 
 TEST_F(GroupCacheTest, DeltaNonSubscribedExcluded) {

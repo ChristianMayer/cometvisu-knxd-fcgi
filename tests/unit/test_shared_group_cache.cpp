@@ -188,17 +188,17 @@ TEST_F(SharedGroupCacheTest, PositionMonotonicAcrossWrap) {
 // ================================================================
 
 TEST_F(SharedGroupCacheTest, GetDeltaReturnsNewerEntries) {
-  cache_.push(0xFFFF, {0x00});  // dummy: pushed_at=0
-  cache_.push(0x0A03, {0x01});  // pushed_at=1
-  cache_.push(0x0B04, {0x02});  // pushed_at=2
-  cache_.push(0x0C05, {0x03});  // pushed_at=3
+  cache_.push(0xFFFF, {0x00});  // dummy: pushed_at=1
+  cache_.push(0x0A03, {0x01});  // pushed_at=2
+  cache_.push(0x0B04, {0x02});  // pushed_at=3
+  cache_.push(0x0C05, {0x03});  // pushed_at=4
 
-  auto delta = cache_.get_delta(1, {0x0A03, 0x0B04, 0x0C05});
-  // Only entries with pushed_at > 1 → pos 2 (0x0B04) and pos 3 (0x0C05)
+  auto delta = cache_.get_delta(2, {0x0A03, 0x0B04, 0x0C05});
+  // Only entries with pushed_at > 2 → pos 3 (0x0B04) and pos 4 (0x0C05)
   EXPECT_EQ(delta.values.size(), 2);
   EXPECT_TRUE(delta.values.contains(0x0B04));
   EXPECT_TRUE(delta.values.contains(0x0C05));
-  EXPECT_FALSE(delta.values.contains(0x0A03));  // pushed_at=1, not > since_pos
+  EXPECT_FALSE(delta.values.contains(0x0A03));  // pushed_at=2, not > since_pos
   EXPECT_EQ(delta.position, 4);
 }
 
@@ -210,6 +210,29 @@ TEST_F(SharedGroupCacheTest, GetDeltaEmptyWhenNoneNewer) {
   // pushed_at=1 > 0 → entry returned
   EXPECT_EQ(delta.values.size(), 1);
   EXPECT_EQ(delta.position, 1);
+}
+
+/// Regression test: pushed_at and position() must be consistent.
+/// After the first push, position() returns 1 but the entry had pushed_at=0
+/// under the old code.  The client receives i=1, then polls with i=1.
+/// The second push at pushed_at=1 was incorrectly excluded because
+/// entry_dist==0 made it look like the same position.  This caused
+/// the read handler to loop until timeout — "extreme delays".
+TEST_F(SharedGroupCacheTest, PushedAtMatchesPositionForDeltaQuery) {
+  uint16_t addr = 0x0A03;
+
+  // Push first value — client receives this and gets position() as i.
+  cache_.push(addr, {0x42});
+  uint32_t pos_after_first = cache_.position();  // must match pushed_at semantics
+
+  // Push second value — this is new data the client should receive.
+  cache_.push(addr, {0x99});
+
+  // Client polls with i=pos_after_first.  Must receive the second entry.
+  auto delta = cache_.get_delta(pos_after_first, {addr});
+  ASSERT_EQ(delta.values.size(), 1)
+      << "Second push must be visible to client polling after first push";
+  EXPECT_EQ(delta.values[addr][0], 0x99);
 }
 
 TEST_F(SharedGroupCacheTest, GetDeltaOnlySubscribed) {
@@ -406,34 +429,36 @@ TEST_F(SharedGroupCacheTest, GetAgeZeroVsNoFilter) {
 /// get_delta() with max_age_sec=-1 must filter ONLY by position
 /// (pushed_at > since_pos), never by age.
 TEST_F(SharedGroupCacheTest, GetDeltaWithNoAgeFilterReturnsByPositionOnly) {
-  // With 0-based positions: pushed_at = 0, 1, 2, 3. position = 4.
-  cache_.push(0x0A03, {0x01});  // pushed_at=0
-  cache_.push(0x0A03, {0x02});  // pushed_at=1
-  cache_.push(0x0A03, {0x03});  // pushed_at=2
-  cache_.push(0x0A03, {0x04});  // pushed_at=3
+  // With 1-based positions: pushed_at = 1, 2, 3, 4. position = 4.
+  cache_.push(0x0A03, {0x01});  // pushed_at=1
+  cache_.push(0x0A03, {0x02});  // pushed_at=2
+  cache_.push(0x0A03, {0x03});  // pushed_at=3
+  cache_.push(0x0A03, {0x04});  // pushed_at=4
 
-  // since_pos=1: entries at pushed_at > 1 → pushed_at 2 and 3.
-  // Same-address dedup gives only the latest (pushed_at=3 → 0x04).
-  auto delta = cache_.get_delta(1, {0x0A03}, -1);
+  // since_pos=2: entries at pushed_at > 2 → pushed_at 3 and 4.
+  // Same-address dedup gives only the latest (pushed_at=4 → 0x04).
+  auto delta = cache_.get_delta(2, {0x0A03}, -1);
   EXPECT_EQ(delta.values.size(), 1);
   EXPECT_TRUE(delta.values.contains(0x0A03));
   EXPECT_EQ(delta.values[0x0A03][0], 0x04);
   EXPECT_EQ(delta.position, 4);
 
-  // since_pos=2: entries at pushed_at > 2 → pushed_at=3 only.
-  auto delta2 = cache_.get_delta(2, {0x0A03}, -1);
+  // since_pos=3: entries at pushed_at > 3 → pushed_at=4 only.
+  auto delta2 = cache_.get_delta(3, {0x0A03}, -1);
   EXPECT_EQ(delta2.values.size(), 1);
   EXPECT_EQ(delta2.values[0x0A03][0], 0x04);
   EXPECT_EQ(delta2.position, 4);
 
-  // since_pos=3: entries at pushed_at > 3 → none.
-  auto delta3 = cache_.get_delta(3, {0x0A03}, -1);
+  // since_pos=4: entries at pushed_at > 4 → none.
+  auto delta3 = cache_.get_delta(4, {0x0A03}, -1);
   EXPECT_TRUE(delta3.values.empty());
   EXPECT_EQ(delta3.position, 4);
 
-  // since_pos=4: nothing newer.
-  auto delta4 = cache_.get_delta(4, {0x0A03}, -1);
-  EXPECT_TRUE(delta4.values.empty());
+  // since_pos=5: past end → epoch mismatch (since_pos > position, wraps).
+  // Epoch mismatch triggers full refresh → all cached values returned.
+  auto delta4 = cache_.get_delta(5, {0x0A03}, -1);
+  EXPECT_EQ(delta4.values.size(), 1);
+  EXPECT_EQ(delta4.values[0x0A03][0], 0x04);
   EXPECT_EQ(delta4.position, 4);
 }
 
