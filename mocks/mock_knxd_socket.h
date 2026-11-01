@@ -45,18 +45,30 @@ public:
   // --- test helpers ---
   void set_connection_success(bool success) { connection_success_ = success; }
   void enqueue_telegram(uint16_t addr, const std::vector<uint8_t>& apdu);
-  struct SentPacket { uint16_t group_addr; std::vector<uint8_t> apdu; };
+  struct SentPacket {
+    uint16_t group_addr;
+    std::vector<uint8_t> apdu;
+  };
   [[nodiscard]] std::vector<SentPacket> sent_packets() const { return sent_packets_; }
   void reset();
   void set_telegram_count(uint64_t count) { telegram_count_ = count; }
   void set_send_fail_count(int count) { send_fail_count_ = count; }
   void set_connect_fail_count(int count) { connect_fail_count_ = count; }
+  /// Number of upcoming wait_for_activity() calls that report a lost connection.
+  void set_wait_error_count(int count) { wait_error_count_ = count; }
+  /// Number of connect() calls so far (used to detect reconnect behaviour).
+  [[nodiscard]] int connect_calls() const { return connect_calls_; }
+  /// Number of wait_for_activity() calls so far (used to detect busy loops).
+  [[nodiscard]] int wait_calls() const { return wait_calls_; }
 
 private:
   bool connected_ = false;
   bool group_socket_open_ = false;
   bool connection_success_ = true;
   int connect_fail_count_ = 0;
+  int wait_error_count_ = 0;
+  int connect_calls_ = 0;
+  int wait_calls_ = 0;
   std::string last_socket_path_;
   std::queue<std::pair<uint16_t, std::vector<uint8_t>>> telegram_queue_;
   std::vector<SentPacket> sent_packets_;

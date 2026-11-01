@@ -62,6 +62,14 @@ add_library(cvknxd_state STATIC
 target_include_directories(cvknxd_state PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(cvknxd_state PUBLIC cvknxd_util)
 
+# ---- Cache reader library (knxd -> SharedGroupCache pump) ----
+add_library(cvknxd_cache_reader STATIC
+    knxd/cache_reader.cpp
+)
+
+target_include_directories(cvknxd_cache_reader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(cvknxd_cache_reader PUBLIC cvknxd_knxd cvknxd_state cvknxd_util)
+
 # ---- FCGI server library ----
 add_library(cvknxd_fcgi STATIC
     fcgi/fcgi_server.cpp
@@ -99,6 +107,7 @@ target_link_libraries(cometvisu-knxd-fcgi PRIVATE
     cvknxd_fcgi
     cvknxd_router
     cvknxd_handlers
+    cvknxd_cache_reader
     cvknxd_knxd
     cvknxd_state
     cvknxd_util

@@ -19,6 +19,7 @@ namespace cvknxd {
 
 bool MockKnxdClient::connect(std::string_view socket_path) {
   last_socket_path_ = socket_path;
+  connect_calls_++;
   if (connect_fail_count_ > 0) {
     connect_fail_count_--;
     connected_ = false;
@@ -82,6 +83,14 @@ uint64_t MockKnxdClient::get_telegram_count() const {
 }
 void MockKnxdClient::set_nonblocking(bool /*enable*/) {}
 KnxdClient::WaitResult MockKnxdClient::wait_for_activity(int /*timeout_ms*/) {
+  wait_calls_++;
+  if (!connected_) {
+    return WaitResult::Error;
+  }
+  if (wait_error_count_ > 0) {
+    wait_error_count_--;
+    return WaitResult::Error;
+  }
   return telegram_queue_.empty() ? WaitResult::Timeout : WaitResult::GroupData;
 }
 void MockKnxdClient::enqueue_telegram(uint16_t addr, const std::vector<uint8_t>& apdu) {
@@ -99,6 +108,9 @@ void MockKnxdClient::reset() {
   telegram_count_ = 0;
   send_fail_count_ = 0;
   connect_fail_count_ = 0;
+  wait_error_count_ = 0;
+  connect_calls_ = 0;
+  wait_calls_ = 0;
 }
 
 }  // namespace cvknxd

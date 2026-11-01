@@ -86,7 +86,7 @@ bool write_all(int fd, const uint8_t* data, size_t len) {
         continue;
       }
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        struct pollfd pfd {};
+        struct pollfd pfd{};
         pfd.fd = fd;
         pfd.events = POLLOUT;
         if (::poll(&pfd, 1, 5000) <= 0) {
@@ -176,13 +176,17 @@ bool KnxdClient::connect(std::string_view socket_path) {
     return false;
   }
 
-  struct sockaddr_un addr {};
+  struct sockaddr_un addr{};
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
   if (socket_path.size() >= sizeof(addr.sun_path)) {
     return false;
   }
   std::memcpy(addr.sun_path, socket_path.data(), socket_path.size());
+
+  // Remember the path even when this attempt fails: reconnect() needs it to
+  // recover once knxd is back (e.g. "Link down, terminating" at startup).
+  impl_->socket_path_ = socket_path;
 
   // Non-blocking connect with 5-second timeout.
   int flags = ::fcntl(impl_->fd, F_GETFL, 0);
@@ -199,7 +203,7 @@ bool KnxdClient::connect(std::string_view socket_path) {
   }
 
   if (ret < 0) {
-    struct pollfd pfd {};
+    struct pollfd pfd{};
     pfd.fd = impl_->fd;
     pfd.events = POLLOUT;
     if (::poll(&pfd, 1, 5000) <= 0) {
@@ -221,7 +225,6 @@ bool KnxdClient::connect(std::string_view socket_path) {
     ::fcntl(impl_->fd, F_SETFL, flags & ~O_NONBLOCK);
   }
 
-  impl_->socket_path_ = socket_path;
   return true;
 }
 
@@ -346,7 +349,7 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
   auto msg = read_message(impl_->fd, impl_->read_buffer_);
   if (!msg) {
     // Check if the connection died (POLLHUP) — reconnect and retry once.
-    struct pollfd pfd {};
+    struct pollfd pfd{};
     pfd.fd = impl_->fd;
     // NOLINTNEXTLINE(readability-implicit-bool-conversion)
     if (::poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLHUP | POLLERR)) != 0) {
@@ -425,15 +428,28 @@ KnxdClient::WaitResult KnxdClient::wait_for_activity(int timeout_ms) {
     fd = impl_->fd;
   }
   if (fd < 0) {
+    // Not connected.  This MUST be reported as an error: reporting it as a
+    // plain timeout makes the cache reader retry poll() in a tight loop and
+    // burn 100% CPU while knxd is missing.
+    return WaitResult::Error;
+  }
+
+  struct pollfd pfd{};
+  pfd.fd = fd;
+  pfd.events = POLLIN;
+  const int ret = ::poll(&pfd, 1, timeout_ms);
+  if (ret < 0) {
+    return (errno == EINTR) ? WaitResult::Timeout : WaitResult::Error;
+  }
+  if (ret == 0) {
     return WaitResult::Timeout;
   }
 
-  struct pollfd pfd {};
-  pfd.fd = fd;
-  pfd.events = POLLIN;
-  int ret = ::poll(&pfd, 1, timeout_ms);
-  if (ret <= 0) {
-    return WaitResult::Timeout;
+  // Check for a dead connection BEFORE looking at POLLIN: a socket whose peer
+  // went away reports POLLIN|POLLHUP, and treating that as "data available"
+  // loops forever on the EOF.
+  if ((pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
+    return WaitResult::Error;
   }
   return ((pfd.revents & POLLIN) != 0) ? WaitResult::GroupData : WaitResult::Timeout;
 }

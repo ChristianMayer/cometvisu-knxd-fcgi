@@ -1,5 +1,6 @@
 {
   // ---- CMake Tools settings ----
+  "cmake.configureOnOpen": false,
   "cmake.buildDirectory": "${workspaceFolder}/build",
   "cmake.configureSettings": {
     "CMAKE_BUILD_TYPE": "Release",

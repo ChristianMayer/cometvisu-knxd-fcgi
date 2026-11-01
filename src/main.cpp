@@ -51,6 +51,7 @@
 #include <vector>
 
 #include "fcgi/fcgi_server.h"
+#include "knxd/cache_reader.h"
 #include "knxd/knxd_client.h"
 #include "knxd/knxd_connector.h"
 #include "knxd/knxd_protocol.h"
@@ -58,7 +59,6 @@
 #include "state/session_store.h"
 #include "state/shared_group_cache.h"
 #include "util/debug_log.h"
-#include "util/hex.h"
 #include "version.h"
 
 namespace {
@@ -97,7 +97,7 @@ extern "C" void handle_sigchld(int /*signum*/) {
 /// Set resource limits for long-running embedded operation.
 /// Called once at startup (before fork) so all children inherit the limits.
 void set_resource_limits() {
-  struct rlimit rl {};
+  struct rlimit rl{};
 
   // Limit file descriptors to prevent exhaustion from slow leaks.
   rl.rlim_cur = kMaxFileDescriptors;
@@ -286,25 +286,25 @@ int main(int argc, char* argv[]) {
   std::cout << "[INFO] Shared group cache created (" << SharedGroupCache::region_size()
             << " bytes, capacity=" << kSharedCacheCapacity << ")\n";
 
-  // ---- Connect to knxd with retry (parent's connection) ----
-  // The parent's knxd connection is used ONLY for the first connection test.
-  // The cache reader opens its own connection; workers open write-only connections.
+  // ---- Verify the knxd connection (best effort) ----
+  // The daemon MUST start even when knxd is unavailable: knxd can die at any
+  // time ("Link down, terminating") and is often restarted by a supervisor.
+  // The cache reader and the workers reconnect on demand, so a failed check is
+  // only a warning — never a reason to refuse to serve HTTP.
   KnxdClient knxd_parent;
-  if (!connect_knxd_with_retry(knxd_parent, knxd_socket, false)) {
-    std::cerr << "[ERROR] Cannot connect to knxd at " << knxd_socket << " after all retries\n";
-    return 1;
-  }
-
-  // Verify group socket capability, then disconnect — the parent doesn't
-  // need a persistent connection.
-  if (!knxd_parent.open_group_socket(false)) {
-    std::cerr << "[ERROR] Cannot open group socket on knxd\n";
+  if (connect_knxd_with_retry(knxd_parent, knxd_socket, false)) {
+    if (knxd_parent.open_group_socket(false)) {
+      knxd_parent.set_nonblocking(true);
+      std::cout << "[INFO] knxd connection verified at " << knxd_socket << "\n";
+    } else {
+      std::cerr << "[WARN] knxd at " << knxd_socket
+                << " does not accept a group socket — continuing, retrying in the background\n";
+    }
     knxd_parent.disconnect();
-    return 1;
+  } else {
+    std::cerr << "[WARN] knxd not reachable at " << knxd_socket
+              << " — starting anyway and retrying in the background\n";
   }
-  knxd_parent.set_nonblocking(true);
-  knxd_parent.disconnect();
-  std::cout << "[INFO] knxd connection verified at " << knxd_socket << "\n";
 
   SessionStore sessions;
 
@@ -401,42 +401,23 @@ int main(int argc, char* argv[]) {
           server.close_listen_socket();
         }
 
-        // Open own knxd connection for reading group telegrams.
+        // The reader owns its own knxd connection and reconnects forever:
+        // knxd may be missing at startup or restart at any time, and the loop
+        // must wait for it without burning CPU.  SIGTERM (PR_SET_PDEATHSIG
+        // above) terminates the reader; the stop predicate keeps the loop
+        // stoppable and testable.
         KnxdClient reader_knxd;
-        if (!connect_knxd_with_retry(reader_knxd, knxd_socket, true)) {
-          std::cerr << "[ERROR] Cache reader pid=" << ::getpid() << ": Cannot connect to knxd\n";
-          std::_Exit(1);
-        }
-        if (!reader_knxd.open_group_socket(false)) {
-          std::cerr << "[ERROR] Cache reader pid=" << ::getpid() << ": Cannot open group socket\n";
-          std::_Exit(2);
-        }
-        reader_knxd.set_nonblocking(true);
+        std::cout << "[INFO] Cache reader started, pid=" << ::getpid() << "\n";
+        std::cout << std::flush;
 
-        std::cout << "[INFO] Cache reader ready, pid=" << ::getpid() << "\n";
+        CacheReaderOptions reader_options;
+        reader_options.socket_path = knxd_socket;
 
-        // Main loop: poll knxd group socket, push telegrams to shared cache.
-        while (g_shutdown_requested == 0) {
-          auto activity = reader_knxd.wait_for_activity(1000);
-          if (activity == KnxdClientInterface::WaitResult::Timeout) {
-            continue;  // check shutdown flag
-          }
-
-          uint16_t addr = 0;
-          std::vector<uint8_t> apdu;
-          while (reader_knxd.poll_group_telegram(addr, apdu)) {
-            ApduType apdu_type{};
-            std::vector<uint8_t> value_data;
-            if (!parse_apdu(apdu, apdu_type, value_data) || apdu_type == ApduType::Read) {
-              continue;
-            }
-            shared_cache.push(addr, value_data);
-            DebugLog::knxd_recv("cache_push", KnxGroupAddress::from_eibaddr(addr).to_string(),
-                                hex_encode(value_data.data(), value_data.size()));
-          }
-        }
+        run_cache_reader(reader_knxd, shared_cache, reader_options,
+                         [] { return g_shutdown_requested != 0; });
 
         std::cout << "[INFO] Cache reader shutting down\n";
+        std::cout << std::flush;
         reader_knxd.disconnect();
         std::_Exit(0);
       }
@@ -468,17 +449,20 @@ int main(int argc, char* argv[]) {
         // The parent successfully connected to knxd, so use extended retry delays.
         // Workers use write-only group sockets — the cache reader handles all
         // group telegram reception.
-        if (!connect_knxd_with_retry(knxd_writer, knxd_socket, true)) {
-          std::cerr << "[ERROR] Worker pid=" << ::getpid() << " (worker " << i
-                    << "): Cannot connect to knxd at " << knxd_socket << " after all retries\n";
-          std::_Exit(1);
-        }
-
-        if (!knxd_writer.open_group_socket(true)) {
-          std::cerr << "[ERROR] Worker pid=" << ::getpid() << " (worker " << i
-                    << "): Cannot open group socket on knxd at " << knxd_socket
-                    << " (check knxd is running and accessible)\n";
-          std::_Exit(2);
+        //
+        // A missing knxd must not keep the worker from serving HTTP and must
+        // not delay its readiness: try once, warn on failure, and let
+        // send_group_packet() reconnect on demand (connect() remembers the
+        // socket path even when the attempt failed).
+        if (!knxd_writer.connect(knxd_socket)) {
+          std::cerr << "[WARN] Worker pid=" << ::getpid() << " (worker " << i
+                    << "): knxd not reachable at " << knxd_socket
+                    << " — continuing, will retry on demand\n";
+        } else if (!knxd_writer.open_group_socket(true)) {
+          std::cerr << "[WARN] Worker pid=" << ::getpid() << " (worker " << i
+                    << "): cannot open group socket on knxd at " << knxd_socket
+                    << " — continuing, will retry on demand\n";
+          knxd_writer.disconnect();
         }
 
         std::cout << "[INFO] Worker " << i << " ready, pid=" << ::getpid() << "\n";

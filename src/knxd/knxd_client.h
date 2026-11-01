@@ -62,13 +62,13 @@ public:
   /// Send a group telegram (EIB_GROUP_PACKET) to the given address.
   /// @param group_addr 16-bit EIB group address.
   /// @param apdu Encoded APDU bytes including the 2-byte header.
-  [[nodiscard]] virtual bool send_group_packet(
-      uint16_t group_addr, const std::vector<uint8_t>& apdu) = 0;
+  [[nodiscard]] virtual bool send_group_packet(uint16_t group_addr,
+                                               const std::vector<uint8_t>& apdu) = 0;
 
   /// Try to receive one group telegram (APDU_PACKET) non-blocking.
   /// @return true if a telegram was consumed.
-  [[nodiscard]] virtual bool poll_group_telegram(
-      uint16_t& out_group_addr, std::vector<uint8_t>& out_apdu) = 0;
+  [[nodiscard]] virtual bool poll_group_telegram(uint16_t& out_group_addr,
+                                                 std::vector<uint8_t>& out_apdu) = 0;
 
   /// Underlying socket fd (for poll/select).  Returns -1 if not connected.
   [[nodiscard]] virtual int get_fd() const = 0;
@@ -81,8 +81,9 @@ public:
 
   /// Result of wait_for_activity().
   enum class WaitResult {
-    Timeout = 0,   ///< No data within the timeout.
-    GroupData = 1  ///< Data available on the group socket.
+    Timeout = 0,    ///< No data within the timeout — the connection is fine.
+    GroupData = 1,  ///< Data available on the group socket.
+    Error = 2       ///< Connection is gone (POLLHUP/POLLERR/POLLNVAL or not connected).
   };
 
   /// Block until data arrives on the group socket or timeout expires.
@@ -108,10 +109,10 @@ public:
   [[nodiscard]] bool reconnect() override;
   [[nodiscard]] bool is_connected() const override;
   [[nodiscard]] bool open_group_socket(bool write_only) override;
-  [[nodiscard]] bool send_group_packet(
-      uint16_t group_addr, const std::vector<uint8_t>& apdu) override;
-  [[nodiscard]] bool poll_group_telegram(
-      uint16_t& out_group_addr, std::vector<uint8_t>& out_apdu) override;
+  [[nodiscard]] bool send_group_packet(uint16_t group_addr,
+                                       const std::vector<uint8_t>& apdu) override;
+  [[nodiscard]] bool poll_group_telegram(uint16_t& out_group_addr,
+                                         std::vector<uint8_t>& out_apdu) override;
   [[nodiscard]] int get_fd() const override;
   [[nodiscard]] uint64_t get_telegram_count() const override;
   void set_nonblocking(bool enable) override;
