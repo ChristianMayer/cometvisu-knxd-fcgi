@@ -90,10 +90,14 @@ public:
 
   /// @brief Set a shared semaphore for general request concurrency limiting.
   ///
-  /// When set, ALL requests (both read and write) must acquire this
-  /// semaphore before processing.  If exhausted, the request returns
-  /// HTTP 503 immediately, preventing the listen backlog from filling
-  /// up and causing the reverse proxy to return 502 Bad Gateway.
+  /// When set, long-poll read (`/r`) requests must acquire this semaphore
+  /// before processing.  If exhausted, the request returns HTTP 503
+  /// immediately, preventing the listen backlog from filling up and causing
+  /// the reverse proxy to return 502 Bad Gateway.
+  ///
+  /// Writes (`/w`) and logins (`/l`) never take this token: they finish in
+  /// microseconds, and a spurious 503 would be reported to the user as a
+  /// failed operation.
   ///
   /// @param sem Pointer to a sem_t in shared memory (MAP_SHARED).  Must be
   ///            initialized to a safe concurrency limit (typically equal to
@@ -142,7 +146,14 @@ private:
   FCGX_Request request_{};
   std::atomic<bool> shutdown_requested_{false};
   sem_t* load_shed_sem_ = nullptr;    // shared semaphore for load shedding (/r only)
-  sem_t* concurrency_sem_ = nullptr;  // shared semaphore for total request limiting
+  sem_t* concurrency_sem_ = nullptr;  // shared semaphore for long-poll (/r only)
+
+  /// Invoke the request handler, converting an exception into HTTP 500.
+  ///
+  /// A throwing handler must not terminate the worker process: that would
+  /// kill every other request this worker is queued for and permanently lose
+  /// the semaphore capacity the worker held.
+  [[nodiscard]] FcgiResponse invoke_handler(const FcgiRequest& request);
 
   /// Read all FCGI parameters from stdin into an FcgiRequest.
   /// Uses getenv() which reads from the global environ pointer.

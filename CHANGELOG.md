@@ -22,6 +22,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so knxd may be restarted at any time without restarting the backend.
 - `KnxdClient::connect()` now remembers the socket path even when the attempt
   fails, so `reconnect()` can recover once knxd is back.
+- **A `/w` request can no longer block forever on the knxd handshake.**
+  `open_group_socket()` read the `EIB_OPEN_GROUPCON` reply from a blocking
+  socket without a deadline, so a knxd that accepted the connection but never
+  answered hung the worker (and with it the request) indefinitely.  The reply
+  is now read with a deadline (default 5 s, `set_handshake_timeout_ms()`).
+- **Writes and logins are no longer rejected with 503.** The concurrency and
+  load-shedding semaphores applied to `/w`/`/l` as well, so a pool full of
+  long-polls made switch operations fail.  Both now only guard `/r`.
+  Tokens are released via RAII (also when a handler throws — that used to
+  terminate the worker process; it now returns HTTP 500), and a worker that
+  dies restores its token instead of permanently shrinking the pool.
+- **The parent supervisor restarts dead children.** The SIGCHLD handler used
+  to `waitpid()` all children itself, so the supervisor never saw an exit
+  status: a crashed worker was never replaced and a dead cache reader was
+  never restarted (leaving `/r` on stale data forever).  The parent is now the
+  only reaper, keeps the listen socket open for replacements, restarts workers
+  and the cache reader with a crash-loop backoff, and no longer ignores
+  SIGTERM while blocked in `wait()` (`sigaction()` without `SA_RESTART`).
+- `FcgiRequest::path()` falls back to the last component of `SCRIPT_NAME` when
+  no `REQUEST_URI` is passed (pure-CGI setups such as `cgi-fcgi`).
 
 ## [1.0.0] — 2026-07-05
 

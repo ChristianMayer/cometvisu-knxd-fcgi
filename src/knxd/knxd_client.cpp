@@ -31,6 +31,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -60,6 +61,7 @@ struct KnxdClient::Impl {
 
   int fd = -1;                                              // Unix socket to knxd
   bool group_socket_open = false;                           // OPEN_GROUPCON succeeded
+  int handshake_timeout_ms = 5000;                          // OPEN_GROUPCON reply deadline
   std::string socket_path_;                                 // stored for reconnect
   bool write_only_ = false;                                 // stored for reconnect
   std::vector<uint8_t> read_buffer_;                        // buffered partial reads (non-blocking)
@@ -111,6 +113,40 @@ inline void shrink_if_large(std::vector<uint8_t>& buf) {
   }
 }
 
+/// Result of a single non-blocking read attempt.
+enum class ReadOutcome { Data, Eof, WouldBlock, Error };
+
+/// Pull whatever bytes are currently available into @p buffer.
+ReadOutcome read_some(int fd, std::vector<uint8_t>& buffer) {
+  std::array<uint8_t, 4096> tmp{};
+  // NOLINTNEXTLINE(bugprone-signed-char-misuse)
+  const ssize_t n = ::read(fd, tmp.data(), tmp.size());
+  if (n > 0) {
+    size_t new_size = buffer.size() + static_cast<size_t>(n);
+    if (new_size > kMaxReadBufferSize) {
+      size_t excess = new_size - kMaxReadBufferSize;
+      if (excess >= buffer.size()) {
+        buffer.clear();
+      } else {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+        buffer.erase(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(excess));
+      }
+    }
+    buffer.insert(buffer.end(), tmp.data(), &tmp[static_cast<size_t>(n)]);
+    return ReadOutcome::Data;
+  }
+  if (n == 0) {
+    return ReadOutcome::Eof;
+  }
+  if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    return ReadOutcome::WouldBlock;
+  }
+  if (errno == EINTR) {
+    return ReadOutcome::WouldBlock;
+  }
+  return ReadOutcome::Error;
+}
+
 /// Read one complete eibd message (2-byte big-endian length prefix)
 /// from a non-blocking socket.  Uses an accumulation buffer for partial
 /// reads.  Returns std::nullopt if no complete message is available yet.
@@ -121,32 +157,61 @@ std::optional<std::vector<uint8_t>> read_message(int fd, std::vector<uint8_t>& b
       shrink_if_large(buffer);
       return msg;
     }
-    std::array<uint8_t, 4096> tmp{};
-    ssize_t n = ::read(fd, tmp.data(), tmp.size());
-    if (n > 0) {
-      size_t new_size = buffer.size() + static_cast<size_t>(n);
-      if (new_size > kMaxReadBufferSize) {
-        size_t excess = new_size - kMaxReadBufferSize;
-        if (excess >= buffer.size()) {
-          buffer.clear();
-        } else {
-          // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-          buffer.erase(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(excess));
-        }
+    if (read_some(fd, buffer) != ReadOutcome::Data) {
+      return std::nullopt;
+    }
+  }
+}
+
+/// Read one complete eibd message, waiting at most @p timeout_ms for it.
+///
+/// Used for the group socket handshake, where the fd may still be in blocking
+/// mode: without a deadline a knxd that accepts the connection but never
+/// answers keeps the caller (and therefore the whole /w request) blocked
+/// forever.
+std::optional<std::vector<uint8_t>> read_message_deadline(int fd, std::vector<uint8_t>& buffer,
+                                                          int timeout_ms) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, timeout_ms));
+
+  while (true) {
+    auto msg = try_extract_message(buffer);
+    if (msg.has_value()) {
+      shrink_if_large(buffer);
+      return msg;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      return std::nullopt;
+    }
+    const auto remaining_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+    const int poll_ms = static_cast<int>(std::max<int64_t>(1, remaining_ms));
+
+    struct pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    const int ready = ::poll(&pfd, 1, poll_ms);
+    if (ready == 0) {
+      return std::nullopt;  // deadline reached
+    }
+    if (ready < 0) {
+      if (errno == EINTR) {
+        continue;
       }
-      buffer.insert(buffer.end(), tmp.data(), &tmp[static_cast<size_t>(n)]);
-      continue;
-    }
-    if (n == 0) {
       return std::nullopt;
     }
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      return std::nullopt;
+
+    switch (read_some(fd, buffer)) {
+      case ReadOutcome::Data:
+        break;  // maybe complete now — loop and re-check
+      case ReadOutcome::WouldBlock:
+        break;  // spurious wakeup — loop re-validates the deadline
+      case ReadOutcome::Eof:
+      case ReadOutcome::Error:
+        return std::nullopt;
     }
-    if (errno == EINTR) {
-      continue;
-    }
-    return std::nullopt;
   }
 }
 
@@ -280,8 +345,10 @@ bool KnxdClient::open_group_socket(bool write_only) {
     return false;
   }
 
-  auto resp = read_message(impl_->fd, impl_->read_buffer_);
+  auto resp = read_message_deadline(impl_->fd, impl_->read_buffer_, impl_->handshake_timeout_ms);
   if (!resp) {
+    // knxd accepted the connection but did not answer in time — treat the
+    // handshake as failed instead of blocking the caller forever.
     return false;
   }
 
@@ -401,6 +468,11 @@ int KnxdClient::get_fd() const {
 uint64_t KnxdClient::get_telegram_count() const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   return impl_->telegram_count_;
+}
+
+void KnxdClient::set_handshake_timeout_ms(int timeout_ms) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  impl_->handshake_timeout_ms = std::max(1, timeout_ms);
 }
 
 void KnxdClient::set_nonblocking(bool enable) {

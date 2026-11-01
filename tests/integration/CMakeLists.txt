@@ -54,3 +54,15 @@ add_executable(test_fork_workers
 )
 target_link_libraries(test_fork_workers PRIVATE cvknxd_fcgi cvknxd_util GTest::gtest GTest::gtest_main pthread)
 add_test(NAME test_fork_workers COMMAND test_fork_workers)
+
+# Supervision test: runs the real binary and SIGKILLs its children to verify
+# that dead workers and a dead cache reader are replaced.
+add_executable(test_worker_supervision
+    test_worker_supervision.cpp
+)
+target_compile_definitions(test_worker_supervision PRIVATE
+    CVKNXD_BINARY="$<TARGET_FILE:cometvisu-knxd-fcgi>"
+)
+add_dependencies(test_worker_supervision cometvisu-knxd-fcgi)
+target_link_libraries(test_worker_supervision PRIVATE GTest::gtest GTest::gtest_main)
+add_test(NAME test_worker_supervision COMMAND test_worker_supervision)

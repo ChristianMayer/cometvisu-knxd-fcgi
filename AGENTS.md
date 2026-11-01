@@ -105,6 +105,12 @@ actual file content (e.g., `#pragma once` or `#include`).
    All shared state (KnxdClient, SessionStore) is protected by
    `std::mutex`/`std::recursive_mutex` for thread-safe access within each
    process.
+   **The parent supervises the pool and is the only process that reaps
+   children** (no SIGCHLD handler that calls `waitpid()` — it would steal the
+   exit statuses).  Dead workers and a dead cache reader are restarted with a
+   crash-loop backoff (100 ms … 30 s).  The parent therefore keeps the listen
+   socket open so replacements inherit it; closing it made every respawned
+   worker fall back to spawn-fcgi mode and exit immediately.
    Fork-based workers avoid Docker < 20.10.10 seccomp incompatibility where
    `clone3`/`clone` with process-sharing flags (CLONE_VM, CLONE_THREAD) is
    blocked, preventing `std::thread` creation.
@@ -118,6 +124,10 @@ actual file content (e.g., `#pragma once` or `#include`).
      (via `/w` handler) — all group telegram reception goes through the cache
      reader.  This ensures only one knxd connection reads from the bus,
      eliminating duplicate processing and per-worker position divergence.
+   - **Handshake deadline**: every `EIB_OPEN_GROUPCON` reply is read with a
+     deadline (`KnxdClient::set_handshake_timeout_ms()`, default 5 s).  A knxd
+     that accepts the connection but never answers must not block the caller —
+     that used to hang `/w` requests forever.
 
 3. **Shared-memory group cache (`SharedGroupCache`)**: A fixed-size
    open-addressing hash table (2048 entries) in `mmap(MAP_SHARED|MAP_ANONYMOUS)`
@@ -141,6 +151,12 @@ actual file content (e.g., `#pragma once` or `#include`).
    latency) and call `get_delta()` to find matching entries.  Zero CPU while
    waiting.  The `wait_for_new_data()` method handles spurious wakeups and
    robust-mutex recovery (EOWNERDEAD).
+
+   Only `/r` takes a load-shedding/concurrency token; `/w` and `/l` never do,
+   because a spurious 503 on a write surfaces in CometVisu as a failed switch
+   operation.  Tokens are released via RAII (a throwing handler yields HTTP 500
+   instead of terminating the worker) and the parent restores the token of a
+   worker that died, so the pool cannot shrink permanently.
 
 5. **KNX semantic correctness rules** — these are non-negotiable constraints
    that every handler implementation MUST satisfy:

@@ -179,3 +179,11 @@ TEST(FcgiRequestPathTest, EmptyUriReturnsEmpty) {
   FcgiRequest req;
   EXPECT_EQ(req.path(), "");
 }
+
+TEST(FcgiRequestPathTest, ScriptNameOnlyWithoutUriReturnsEndpoint) {
+  // Some FastCGI setups (cgi-fcgi, mod_fcgid) pass only SCRIPT_NAME and no
+  // REQUEST_URI.  The endpoint must still be resolvable.
+  FcgiRequest req;
+  req.script_name = "/w";
+  EXPECT_EQ(req.path(), "/w");
+}

@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstring>
 #include <string>
+#include <thread>
 
 #include "../../src/knxd/knxd_client.h"
 
@@ -95,6 +96,23 @@ public:
     }
   }
 
+  /// Send raw bytes to the client (used to answer the group socket handshake).
+  bool send_bytes(const std::vector<uint8_t>& bytes) {
+    if (peer_ < 0) {
+      return false;
+    }
+    size_t offset = 0;
+    while (offset < bytes.size()) {
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+      const ssize_t written = ::write(peer_, bytes.data() + offset, bytes.size() - offset);
+      if (written <= 0) {
+        return false;
+      }
+      offset += static_cast<size_t>(written);
+    }
+    return true;
+  }
+
 private:
   std::string path_;
   int fd_ = -1;
@@ -143,6 +161,58 @@ TEST(KnxdClientTest, WaitForActivityReturnsErrorWhenPeerClosesConnection) {
   // A closed peer produces POLLIN|POLLHUP on Linux; it must be reported as an
   // error, not as "data available" (which would loop forever).
   EXPECT_EQ(client.wait_for_activity(200), WaitResult::Error);
+}
+
+TEST(KnxdClientTest, OpenGroupSocketGivesUpWhenKnxdNeverAnswersTheHandshake) {
+  FakeKnxdListener listener;
+  ASSERT_TRUE(listener.is_valid());
+
+  KnxdClient client;
+  client.set_handshake_timeout_ms(100);
+  ASSERT_TRUE(client.connect(listener.path()));
+  // knxd accepts the connection but never answers EIB_OPEN_GROUPCON.
+  ASSERT_GE(listener.accept_one(), 0);
+
+  std::atomic<bool> done{false};
+  std::atomic<bool> result{true};
+  std::thread worker([&] {
+    result = client.open_group_socket(false);
+    done = true;
+  });
+
+  const auto start = std::chrono::steady_clock::now();
+  while (!done && elapsed_ms(start) < 3000) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  const bool finished = done;
+  EXPECT_TRUE(finished) << "open_group_socket() blocked instead of timing out";
+  if (!finished) {
+    // The hung worker cannot be joined — leak it rather than hanging the test.
+    worker.detach();
+    listener.close_peer();  // unblocks the handshake read
+    ADD_FAILURE() << "handshake read without a deadline blocked forever";
+    return;
+  }
+  worker.join();
+
+  EXPECT_FALSE(result.load());
+  // It must have waited for the configured timeout, not failed instantly.
+  EXPECT_GE(elapsed_ms(start), 50);
+}
+
+TEST(KnxdClientTest, OpenGroupSocketSucceedsWhenKnxdAnswersTheHandshake) {
+  FakeKnxdListener listener;
+  ASSERT_TRUE(listener.is_valid());
+
+  KnxdClient client;
+  client.set_handshake_timeout_ms(1000);
+  ASSERT_TRUE(client.connect(listener.path()));
+  ASSERT_GE(listener.accept_one(), 0);
+
+  // [payload_len=2][EIB_OPEN_GROUPCON=0x0026] — the success answer.
+  ASSERT_TRUE(listener.send_bytes({0x00, 0x02, 0x00, 0x26}));
+
+  EXPECT_TRUE(client.open_group_socket(false));
 }
 
 }  // namespace

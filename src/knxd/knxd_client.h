@@ -116,6 +116,13 @@ public:
   [[nodiscard]] int get_fd() const override;
   [[nodiscard]] uint64_t get_telegram_count() const override;
   void set_nonblocking(bool enable) override;
+
+  /// @brief Maximum time to wait for the EIB_OPEN_GROUPCON reply.
+  ///
+  /// Without a deadline, a knxd that accepts the connection but never answers
+  /// blocks the caller forever (this used to hang /w requests).
+  void set_handshake_timeout_ms(int timeout_ms);
+
   [[nodiscard]] WaitResult wait_for_activity(int timeout_ms) override;
 
 private:
