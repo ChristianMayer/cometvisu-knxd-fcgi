@@ -97,7 +97,7 @@ extern "C" void handle_sigchld(int /*signum*/) {
 /// Set resource limits for long-running embedded operation.
 /// Called once at startup (before fork) so all children inherit the limits.
 void set_resource_limits() {
-  struct rlimit rl {};
+  struct rlimit rl{};
 
   // Limit file descriptors to prevent exhaustion from slow leaks.
   rl.rlim_cur = kMaxFileDescriptors;

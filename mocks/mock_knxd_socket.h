@@ -45,7 +45,10 @@ public:
   // --- test helpers ---
   void set_connection_success(bool success) { connection_success_ = success; }
   void enqueue_telegram(uint16_t addr, const std::vector<uint8_t>& apdu);
-  struct SentPacket { uint16_t group_addr; std::vector<uint8_t> apdu; };
+  struct SentPacket {
+    uint16_t group_addr;
+    std::vector<uint8_t> apdu;
+  };
   [[nodiscard]] std::vector<SentPacket> sent_packets() const { return sent_packets_; }
   void reset();
   void set_telegram_count(uint64_t count) { telegram_count_ = count; }

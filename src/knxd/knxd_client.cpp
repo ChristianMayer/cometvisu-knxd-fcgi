@@ -86,7 +86,7 @@ bool write_all(int fd, const uint8_t* data, size_t len) {
         continue;
       }
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        struct pollfd pfd {};
+        struct pollfd pfd{};
         pfd.fd = fd;
         pfd.events = POLLOUT;
         if (::poll(&pfd, 1, 5000) <= 0) {
@@ -176,7 +176,7 @@ bool KnxdClient::connect(std::string_view socket_path) {
     return false;
   }
 
-  struct sockaddr_un addr {};
+  struct sockaddr_un addr{};
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
   if (socket_path.size() >= sizeof(addr.sun_path)) {
@@ -203,7 +203,7 @@ bool KnxdClient::connect(std::string_view socket_path) {
   }
 
   if (ret < 0) {
-    struct pollfd pfd {};
+    struct pollfd pfd{};
     pfd.fd = impl_->fd;
     pfd.events = POLLOUT;
     if (::poll(&pfd, 1, 5000) <= 0) {
@@ -349,7 +349,7 @@ bool KnxdClient::poll_group_telegram(uint16_t& out_group_addr, std::vector<uint8
   auto msg = read_message(impl_->fd, impl_->read_buffer_);
   if (!msg) {
     // Check if the connection died (POLLHUP) — reconnect and retry once.
-    struct pollfd pfd {};
+    struct pollfd pfd{};
     pfd.fd = impl_->fd;
     // NOLINTNEXTLINE(readability-implicit-bool-conversion)
     if (::poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLHUP | POLLERR)) != 0) {
