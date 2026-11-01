@@ -43,11 +43,10 @@ using WaitResult = KnxdClientInterface::WaitResult;
 /// Minimal Unix stream socket listener that stands in for knxd.
 class FakeKnxdListener {
 public:
-  FakeKnxdListener() {
+  FakeKnxdListener() : fd_(::socket(AF_UNIX, SOCK_STREAM, 0)) {
     static int counter = 0;
     path_ = "/tmp/cvknxd-test-" + std::to_string(::getpid()) + "-" + std::to_string(counter++) +
             ".sock";
-    fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd_ < 0) {
       return;
     }
@@ -78,6 +77,8 @@ public:
 
   FakeKnxdListener(const FakeKnxdListener&) = delete;
   FakeKnxdListener& operator=(const FakeKnxdListener&) = delete;
+  FakeKnxdListener(FakeKnxdListener&&) = delete;
+  FakeKnxdListener& operator=(FakeKnxdListener&&) = delete;
 
   [[nodiscard]] bool is_valid() const { return fd_ >= 0; }
   [[nodiscard]] const std::string& path() const { return path_; }
@@ -97,7 +98,7 @@ public:
   }
 
   /// Send raw bytes to the client (used to answer the group socket handshake).
-  bool send_bytes(const std::vector<uint8_t>& bytes) {
+  bool send_bytes(const std::vector<uint8_t>& bytes) const {
     if (peer_ < 0) {
       return false;
     }

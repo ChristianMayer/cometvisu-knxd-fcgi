@@ -95,7 +95,9 @@ TEST(QueryStringTest, ParameterCountLimit) {
   // Build a query string with many unique parameters
   std::string q;
   for (int i = 0; i < 150; ++i) {
-    if (i > 0) q += '&';
+    if (i > 0) {
+      q += '&';
+    }
     q += "p" + std::to_string(i) + "=v" + std::to_string(i);
   }
   QueryString qs(q);
@@ -112,7 +114,9 @@ TEST(QueryStringTest, ValueCountPerKeyLimit) {
   // Build more values than kMaxValuesPerKey (250)
   std::string q;
   for (int i = 0; i < 300; ++i) {
-    if (i > 0) q += '&';
+    if (i > 0) {
+      q += '&';
+    }
     q += "a=v" + std::to_string(i);
   }
 
@@ -130,7 +134,9 @@ TEST(QueryStringTest, TotalParamCountLimit) {
   // the per-key limit (250).
   std::string q;
   for (int i = 0; i < 300; ++i) {
-    if (i > 0) q += '&';
+    if (i > 0) {
+      q += '&';
+    }
 
     const char* key = (i % 2 == 0) ? "a" : "b";
     q += std::string(key) + "=v" + std::to_string(i);

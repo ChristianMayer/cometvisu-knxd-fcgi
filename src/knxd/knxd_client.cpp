@@ -114,7 +114,7 @@ inline void shrink_if_large(std::vector<uint8_t>& buf) {
 }
 
 /// Result of a single non-blocking read attempt.
-enum class ReadOutcome { Data, Eof, WouldBlock, Error };
+enum class ReadOutcome : std::uint8_t { Data, Eof, WouldBlock, Error };
 
 /// Pull whatever bytes are currently available into @p buffer.
 ReadOutcome read_some(int fd, std::vector<uint8_t>& buffer) {
@@ -205,9 +205,8 @@ std::optional<std::vector<uint8_t>> read_message_deadline(int fd, std::vector<ui
 
     switch (read_some(fd, buffer)) {
       case ReadOutcome::Data:
-        break;  // maybe complete now — loop and re-check
       case ReadOutcome::WouldBlock:
-        break;  // spurious wakeup — loop re-validates the deadline
+        break;
       case ReadOutcome::Eof:
       case ReadOutcome::Error:
         return std::nullopt;

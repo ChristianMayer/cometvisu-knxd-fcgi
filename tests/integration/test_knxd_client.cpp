@@ -20,6 +20,8 @@
 
 using namespace cvknxd;
 
+namespace {
+
 class KnxdClientTest : public ::testing::Test {
 protected:
   MockKnxdClient client_;
@@ -162,8 +164,9 @@ TEST_F(KnxdClientTest, MultiplePollsDrainAll) {
   uint16_t addr = 0;
   std::vector<uint8_t> apdu;
   int count = 0;
-  while (client_.poll_group_telegram(addr, apdu))
+  while (client_.poll_group_telegram(addr, apdu)) {
     count++;
+  }
   EXPECT_EQ(count, 3);
   EXPECT_EQ(client_.get_telegram_count(), 3);
 }
@@ -184,6 +187,8 @@ TEST_F(KnxdClientTest, OperationsWorkAfterReconnect) {
   EXPECT_TRUE(client_.send_group_packet(0x0A03, apdu));
   EXPECT_EQ(client_.sent_packets().size(), 1);
 }
+
+}  // namespace
 
 // ================================================================
 // Transformed cache tests → GroupCache tests

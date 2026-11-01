@@ -80,7 +80,7 @@ public:
   virtual void set_nonblocking(bool enable) = 0;
 
   /// Result of wait_for_activity().
-  enum class WaitResult {
+  enum class WaitResult : std::uint8_t {
     Timeout = 0,    ///< No data within the timeout — the connection is fine.
     GroupData = 1,  ///< Data available on the group socket.
     Error = 2       ///< Connection is gone (POLLHUP/POLLERR/POLLNVAL or not connected).

@@ -74,7 +74,7 @@ bool sockets_available() {
   if (s < 0) {
     return false;
   }
-  struct sockaddr_un addr {};
+  struct sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   size_t path_len = path.copy(addr.sun_path, sizeof(addr.sun_path) - 1);
   addr.sun_path[path_len] = '\0';
@@ -94,7 +94,7 @@ int connect_with_retry(const std::string& path, int max_retries, int delay_ms) {
       return -1;
     }
 
-    struct sockaddr_un addr {};
+    struct sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     size_t path_len = path.copy(addr.sun_path, sizeof(addr.sun_path) - 1);
     addr.sun_path[path_len] = '\0';

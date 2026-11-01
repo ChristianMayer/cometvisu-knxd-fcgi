@@ -51,7 +51,7 @@ void sleep_interruptible(int duration_ms, int slice_ms, const std::function<bool
       return;
     }
     const int chunk = std::min(remaining, slice);
-    struct timespec request {};
+    struct timespec request{};
     request.tv_sec = chunk / 1000;
     request.tv_nsec = static_cast<long>(chunk % 1000) * 1000000L;
     // EINTR (signal) is expected — the loop re-checks the stop flag.

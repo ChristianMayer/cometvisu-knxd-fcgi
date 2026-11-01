@@ -17,7 +17,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <cstdlib>
+#include <cerrno>
 #include <functional>
 #include <string>
 
@@ -37,14 +37,20 @@ namespace {
 ///
 /// We use fork() to test both outcomes safely — the parent process
 /// never sees an unexpected exit().
-int run_in_subprocess(std::function<void()> fn) {
+int run_in_subprocess(const std::function<void()>& fn) {
   pid_t pid = fork();
   if (pid == 0) {
     fn();
     _exit(0);  // Normal completion — child calls _exit, not exit
   }
-  int status;
-  waitpid(pid, &status, 0);
+  int status{};
+  pid_t waited = waitpid(pid, &status, 0);
+  while (waited < 0 && errno == EINTR) {
+    waited = waitpid(pid, &status, 0);
+  }
+  if (waited != pid) {
+    return -1;
+  }
   if (WIFEXITED(status)) {
     return WEXITSTATUS(status);
   }

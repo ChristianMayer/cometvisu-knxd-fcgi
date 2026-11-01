@@ -57,7 +57,7 @@ At startup, the server logs the effective values of all configuration
 environment variables to stdout:
 
 ```
-[INFO] cometvisu-knxd-fcgi 1.0.0 starting
+[INFO] cometvisu-knxd-fcgi 1.1.0 starting
 [INFO] Configuration:
 [INFO]   KNXD_SOCKET           /run/knx
 [INFO]   FCGI_SOCKET           (not set, spawn-fcgi mode)
