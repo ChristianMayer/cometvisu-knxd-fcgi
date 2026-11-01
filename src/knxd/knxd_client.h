@@ -81,8 +81,9 @@ public:
 
   /// Result of wait_for_activity().
   enum class WaitResult {
-    Timeout = 0,   ///< No data within the timeout.
-    GroupData = 1  ///< Data available on the group socket.
+    Timeout = 0,    ///< No data within the timeout — the connection is fine.
+    GroupData = 1,  ///< Data available on the group socket.
+    Error = 2       ///< Connection is gone (POLLHUP/POLLERR/POLLNVAL or not connected).
   };
 
   /// Block until data arrives on the group socket or timeout expires.

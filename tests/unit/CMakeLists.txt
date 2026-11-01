@@ -80,6 +80,18 @@ add_executable(test_knxd_connector
 target_link_libraries(test_knxd_connector PRIVATE cvknxd_knxd cvknxd_mocks GTest::gtest GTest::gtest_main)
 add_test(NAME test_knxd_connector COMMAND test_knxd_connector)
 
+add_executable(test_knxd_client_socket
+    test_knxd_client_socket.cpp
+)
+target_link_libraries(test_knxd_client_socket PRIVATE cvknxd_knxd GTest::gtest GTest::gtest_main)
+add_test(NAME test_knxd_client_socket COMMAND test_knxd_client_socket)
+
+add_executable(test_cache_reader
+    test_cache_reader.cpp
+)
+target_link_libraries(test_cache_reader PRIVATE cvknxd_cache_reader cvknxd_mocks GTest::gtest GTest::gtest_main)
+add_test(NAME test_cache_reader COMMAND test_cache_reader)
+
 add_executable(test_sigpipe
     test_sigpipe.cpp
 )

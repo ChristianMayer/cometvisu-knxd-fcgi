@@ -119,8 +119,9 @@ TEST_F(KnxdClientTest, DisconnectClearsState) {
   uint16_t addr = 0;
   std::vector<uint8_t> apdu;
   EXPECT_FALSE(client_.poll_group_telegram(addr, apdu));
-  // wait_for_activity should return Timeout
-  EXPECT_EQ(client_.wait_for_activity(1), KnxdClientInterface::WaitResult::Timeout);
+  // wait_for_activity must report the lost connection instead of a plain
+  // timeout — otherwise the cache reader spins at 100% CPU.
+  EXPECT_EQ(client_.wait_for_activity(1), KnxdClientInterface::WaitResult::Error);
 }
 
 TEST_F(KnxdClientTest, ResetClearsState) {

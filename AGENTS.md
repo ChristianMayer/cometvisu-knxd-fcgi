@@ -179,8 +179,15 @@ actual file content (e.g., `#pragma once` or `#include`).
    a `poll()`-based loop: wait for activity on the knxd fd, drain all pending
    group telegrams, parse APDU data, and push value data to the shared cache.
    Each push increments the shared position counter and broadcasts the
-   condition variable to wake blocked long-poll readers.  The cache reader
-   handles knxd reconnection transparently via `connect_knxd_with_retry()`.
+   condition variable to wake blocked long-poll readers.
+   The loop lives in `run_cache_reader()` (`src/knxd/cache_reader.{h,cpp}`, unit
+   tested via `MockKnxdClient`) and is resilient by design: knxd may be absent at
+   startup or restart at any time (`Link down, terminating`), so every failure
+   path reconnects forever with an exponential backoff (500 ms … 30 s) and an
+   interruptible sleep.  It must never busy-loop — a spin here burns a full CPU
+   core on an embedded system, which is exactly the bug this design prevents.
+   `wait_for_activity()` therefore distinguishes `Timeout` (no data, connection
+   fine) from `Error` (POLLHUP/POLLERR/POLLNVAL or not connected).
 
 ## Knxd Protocol Details
 
