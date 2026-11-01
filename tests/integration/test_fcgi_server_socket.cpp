@@ -21,10 +21,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -89,7 +91,7 @@ bool sockets_available() {
   if (s < 0) {
     return false;
   }
-  struct sockaddr_un addr {};
+  struct sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   size_t path_len = path.copy(addr.sun_path, sizeof(addr.sun_path) - 1);
   addr.sun_path[path_len] = '\0';
@@ -128,7 +130,7 @@ protected:
     if (fd < 0) {
       return -1;
     }
-    struct sockaddr_un addr {};
+    struct sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     size_t path_len = socket_path_.copy(addr.sun_path, sizeof(addr.sun_path) - 1);
     addr.sun_path[path_len] = '\0';
@@ -196,21 +198,16 @@ TEST_F(FcgiServerSocketTest, ListenRejectsColonOnly) {
 
 /// Send a FastCGI request via cgi-fcgi and extract the HTTP status code
 /// from the response headers. Returns the status code, or -1 on failure.
-static int fcgi_request_status(const std::string& socket_path, const std::string& query_string) {
-  // Use cgi-fcgi to send a proper FastCGI request
-  std::string cmd = "cgi-fcgi -bind -connect " + socket_path +
-                    " 2>/dev/null <<'EOF'\n"
-                    "REQUEST_METHOD=GET\n"
-                    "SCRIPT_NAME=/r\n"
-                    "QUERY_STRING=" +
-                    query_string +
-                    "\n"
-                    "SERVER_NAME=localhost\n"
-                    "SERVER_PORT=80\n"
-                    "SERVER_PROTOCOL=HTTP/1.1\n"
-                    "CONTENT_TYPE=application/x-www-form-urlencoded\n"
-                    "CONTENT_LENGTH=0\n"
-                    "EOF";
+static int fcgi_request_status(const std::string& socket_path, const std::string& path,
+                               const std::string& query_string) {
+  // cgi-fcgi takes the CGI variables from the environment (not from stdin),
+  // so pass the endpoint and query string that way.
+  std::string cmd = "REQUEST_METHOD=GET SCRIPT_NAME=" + path + " QUERY_STRING='" + query_string +
+                    "'"
+                    " SERVER_NAME=localhost SERVER_PORT=80 SERVER_PROTOCOL=HTTP/1.1"
+                    " CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH=0"
+                    " cgi-fcgi -bind -connect " +
+                    socket_path + " 2>/dev/null </dev/null";
 
   // NOLINTNEXTLINE(concurrency-mt-unsafe,cert-env33-c)
   FILE* pipe = popen(cmd.c_str(), "r");
@@ -273,7 +270,7 @@ TEST_F(FcgiServerSocketTest, ConcurrencyExhaustionReturns503) {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   // Send request — must get 503 because concurrency semaphore is exhausted
-  int status = fcgi_request_status(socket_path_, "a=1/2/3&t=5");
+  int status = fcgi_request_status(socket_path_, "/r", "a=1/2/3&t=5");
   EXPECT_EQ(status, 503)
       << "Request must get 503 when concurrency semaphore is exhausted (0 slots)";
 
@@ -284,6 +281,113 @@ TEST_F(FcgiServerSocketTest, ConcurrencyExhaustionReturns503) {
 
   sem_destroy(conc_sem);
   munmap(conc_sem, sizeof(sem_t));
+}
+
+// ============================================================
+// Writes must never be shed: they finish in microseconds and a 503 here is
+// reported to the CometVisu client as a failed switch operation.
+// ============================================================
+
+TEST_F(FcgiServerSocketTest, WritesAreServedWhileConcurrencySemaphoreIsExhausted) {
+  sem_t* conc_sem = static_cast<sem_t*>(
+      mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
+  ASSERT_NE(conc_sem, MAP_FAILED);
+  sem_init(conc_sem, 1, 0);  // 0 = exhausted
+
+  pid_t child = fork();
+  ASSERT_GE(child, 0);
+
+  if (child == 0) {
+    FcgiServer server;
+    ASSERT_TRUE(server.listen(socket_path_));
+    server.set_concurrency_semaphore(conc_sem);
+    server.set_handler([](const FcgiRequest& /*req*/) -> FcgiResponse {
+      return {.status_code = 200, .body = "{}"};
+    });
+    server.run();
+    _exit(0);
+  }
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  EXPECT_EQ(fcgi_request_status(socket_path_, "/w", "a=1/2/3&v=80"), 200)
+      << "A write must be served even when all long-poll slots are taken";
+
+  kill(child, SIGTERM);
+  int ws = 0;
+  waitpid(child, &ws, 0);
+
+  sem_destroy(conc_sem);
+  munmap(conc_sem, sizeof(sem_t));
+}
+
+TEST_F(FcgiServerSocketTest, WritesAreServedWhileLoadShedSemaphoreIsExhausted) {
+  sem_t* shed_sem = static_cast<sem_t*>(
+      mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
+  ASSERT_NE(shed_sem, MAP_FAILED);
+  sem_init(shed_sem, 1, 0);  // 0 = all long-poll slots taken
+
+  pid_t child = fork();
+  ASSERT_GE(child, 0);
+
+  if (child == 0) {
+    FcgiServer server;
+    ASSERT_TRUE(server.listen(socket_path_));
+    server.set_load_shed_semaphore(shed_sem);
+    server.set_handler([](const FcgiRequest& /*req*/) -> FcgiResponse {
+      return {.status_code = 200, .body = "{}"};
+    });
+    server.run();
+    _exit(0);
+  }
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  EXPECT_EQ(fcgi_request_status(socket_path_, "/w", "a=1/2/3&v=80"), 200)
+      << "A write must be served even when long-poll load shedding is active";
+  EXPECT_EQ(fcgi_request_status(socket_path_, "/r", "a=1/2/3&t=5"), 503)
+      << "A read must still be shed when no long-poll slot is left";
+
+  kill(child, SIGTERM);
+  int ws = 0;
+  waitpid(child, &ws, 0);
+
+  sem_destroy(shed_sem);
+  munmap(shed_sem, sizeof(sem_t));
+}
+
+// ============================================================
+// A handler that throws must not take the worker process down (and with it
+// permanently lose the semaphore capacity it held).
+// ============================================================
+
+TEST_F(FcgiServerSocketTest, HandlerExceptionReturns500AndKeepsTheWorkerAlive) {
+  pid_t child = fork();
+  ASSERT_GE(child, 0);
+
+  if (child == 0) {
+    std::atomic<int> calls{0};
+    FcgiServer server;
+    ASSERT_TRUE(server.listen(socket_path_));
+    server.set_handler([&calls](const FcgiRequest& /*req*/) -> FcgiResponse {
+      if (calls.fetch_add(1) == 0) {
+        throw std::runtime_error("boom");
+      }
+      return {.status_code = 200, .body = "{}"};
+    });
+    server.run();
+    _exit(0);
+  }
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  EXPECT_EQ(fcgi_request_status(socket_path_, "/r", "a=1/2/3&t=5"), 500);
+  EXPECT_EQ(fcgi_request_status(socket_path_, "/r", "a=1/2/3&t=5"), 200)
+      << "The worker must survive a throwing handler";
+
+  kill(child, SIGTERM);
+  int ws = 0;
+  waitpid(child, &ws, 0);
 }
 
 // ============================================================

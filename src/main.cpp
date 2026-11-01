@@ -40,11 +40,14 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -83,15 +86,6 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 
 extern "C" void handle_sigterm(int /*signum*/) {
   g_shutdown_requested = 1;
-}
-
-extern "C" void handle_sigchld(int /*signum*/) {
-  // Reap all terminated children immediately to prevent zombies.
-  // save/restore errno so we don't clobber it for interrupted syscalls.
-  int saved_errno = errno;
-  while (::waitpid(-1, nullptr, WNOHANG) > 0) {
-  }
-  errno = saved_errno;
 }
 
 /// Set resource limits for long-running embedded operation.
@@ -204,11 +198,22 @@ int main(int argc, char* argv[]) {
 
   // Handle SIGTERM for graceful shutdown. The parent forwards the signal
   // to all children, waits for them to exit, then exits itself.
-  (void)::signal(SIGTERM, handle_sigterm);
+  //
+  // sigaction() with sa_flags = 0 (i.e. WITHOUT SA_RESTART) is required: with
+  // the default BSD semantics of signal() the supervisor's wait() is restarted
+  // transparently after the handler returns, so the shutdown flag is never
+  // seen and the parent keeps waiting forever.
+  struct sigaction shutdown_action{};
+  shutdown_action.sa_handler = handle_sigterm;
+  ::sigemptyset(&shutdown_action.sa_mask);
+  shutdown_action.sa_flags = 0;
+  if (::sigaction(SIGTERM, &shutdown_action, nullptr) != 0) {
+    std::cerr << "[WARN] Failed to install SIGTERM handler: " << std::strerror(errno) << "\n";
+  }
 
-  // Handle SIGCHLD to reap terminated children immediately, preventing
-  // zombie processes from accumulating.
-  (void)::signal(SIGCHLD, handle_sigchld);
+  // NOTE: no SIGCHLD handler.  The parent's supervisor loop calls wait() and
+  // must see every exit status — a handler that calls waitpid() would reap the
+  // children first, so dead workers would never be restarted.
 
   // ---- Resource limits for embedded long-running operation ----
   set_resource_limits();
@@ -339,7 +344,8 @@ int main(int argc, char* argv[]) {
     // Shared semaphore to limit concurrent long-poll reads across workers.
     // Initialized to num_workers so that when all workers are busy with
     // long-poll reads, new read requests return empty immediately instead
-    // of queuing in the listen backlog. Write requests are always served.
+    // of queuing in the listen backlog.  Writes and logins never take a
+    // token, so they are always served.
     sem_t* load_shed_sem = static_cast<sem_t*>(
         ::mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
     if (load_shed_sem == MAP_FAILED) {
@@ -355,9 +361,11 @@ int main(int argc, char* argv[]) {
     server.set_load_shed_semaphore(load_shed_sem);
 
     // ---- Concurrency limiting semaphore ----
-    // Limits TOTAL concurrent requests (reads + writes) to prevent the
-    // listen backlog from filling up.  When exhausted, returns HTTP 503
-    // immediately, preventing the reverse proxy from returning 502.
+    // Caps how many long-poll reads may run at the same time.  When
+    // exhausted, /r returns HTTP 503 immediately instead of piling up in the
+    // listen backlog (which makes the reverse proxy report 502).  Writes and
+    // logins never take a token — a spurious 503 would surface in CometVisu
+    // as a failed switch operation.
     sem_t* concurrency_sem = static_cast<sem_t*>(
         ::mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
     if (concurrency_sem == MAP_FAILED) {
@@ -374,22 +382,20 @@ int main(int argc, char* argv[]) {
 
     pid_t parent_pid = ::getpid();
     (void)parent_pid;  // used for debugging / signal filtering if needed
-    std::vector<pid_t> worker_pids;
-    worker_pids.reserve(static_cast<size_t>(num_workers));
 
-    // ---- Cache reader process ----
-    // A dedicated child process that drains the single knxd group socket
-    // and pushes telegrams into the shared cache.  Workers only open
-    // write-only knxd connections — all group telegram reception goes
-    // through this single cache reader.
-    {
-      pid_t reader_pid = ::fork();
-      if (reader_pid < 0) {
-        std::cerr << "[ERROR] fork() for cache reader failed: " << std::strerror(errno) << "\n";
-        return 1;
+    // ---- Child factories ----
+    // Both factories fork; the child runs the given body and never returns
+    // (it exits through _Exit()), the parent gets the pid (or -1 on failure).
+    //
+    // A dedicated cache reader drains the single knxd group socket and pushes
+    // telegrams into the shared cache.  Workers only open write-only knxd
+    // connections — all group telegram reception goes through the reader.
+    const std::function<pid_t()> spawn_cache_reader = [&]() -> pid_t {
+      const pid_t pid = ::fork();
+      if (pid < 0) {
+        return -1;
       }
-
-      if (reader_pid == 0) {
+      if (pid == 0) {
         // ================================================
         // Cache reader child process
         // ================================================
@@ -421,24 +427,14 @@ int main(int argc, char* argv[]) {
         reader_knxd.disconnect();
         std::_Exit(0);
       }
+      return pid;
+    };
 
-      // Parent records the cache reader PID (tracked separately, not in worker_pids).
-      std::cout << "[INFO] Started cache reader pid=" << reader_pid << "\n";
-    }
-
-    bool fork_failed = false;
-    int fork_errno = 0;
-
-    for (int i = 0; i < num_workers; ++i) {
-      pid_t pid = ::fork();
+    const std::function<pid_t(int)> spawn_worker = [&](int index) -> pid_t {
+      const pid_t pid = ::fork();
       if (pid < 0) {
-        fork_errno = errno;
-        std::cerr << "[ERROR] fork() for worker " << (i + 1) << "/" << num_workers
-                  << " failed: " << std::strerror(fork_errno) << " (errno=" << fork_errno << ")\n";
-        fork_failed = true;
-        break;
+        return -1;
       }
-
       if (pid == 0) {
         // ================================================
         // Worker child process
@@ -446,7 +442,6 @@ int main(int argc, char* argv[]) {
         ::prctl(PR_SET_PDEATHSIG, SIGTERM);
         (void)::signal(SIGTERM, SIG_DFL);
 
-        // The parent successfully connected to knxd, so use extended retry delays.
         // Workers use write-only group sockets — the cache reader handles all
         // group telegram reception.
         //
@@ -455,96 +450,203 @@ int main(int argc, char* argv[]) {
         // send_group_packet() reconnect on demand (connect() remembers the
         // socket path even when the attempt failed).
         if (!knxd_writer.connect(knxd_socket)) {
-          std::cerr << "[WARN] Worker pid=" << ::getpid() << " (worker " << i
+          std::cerr << "[WARN] Worker pid=" << ::getpid() << " (worker " << index
                     << "): knxd not reachable at " << knxd_socket
                     << " — continuing, will retry on demand\n";
         } else if (!knxd_writer.open_group_socket(true)) {
-          std::cerr << "[WARN] Worker pid=" << ::getpid() << " (worker " << i
+          std::cerr << "[WARN] Worker pid=" << ::getpid() << " (worker " << index
                     << "): cannot open group socket on knxd at " << knxd_socket
                     << " — continuing, will retry on demand\n";
           knxd_writer.disconnect();
         }
 
-        std::cout << "[INFO] Worker " << i << " ready, pid=" << ::getpid() << "\n";
+        std::cout << "[INFO] Worker " << index << " ready, pid=" << ::getpid() << "\n";
+        std::cout << std::flush;
 
-        int child_result = server.run();
+        const int child_result = server.run();
         knxd_writer.disconnect();
         std::_Exit(child_result);
       }
+      return pid;
+    };
 
-      worker_pids.push_back(pid);
+    // ---- Start the cache reader and the worker pool ----
+    pid_t cache_reader_pid = spawn_cache_reader();
+    if (cache_reader_pid < 0) {
+      std::cerr << "[ERROR] fork() for cache reader failed: " << std::strerror(errno) << "\n";
+      return 1;
+    }
+    std::cout << "[INFO] Started cache reader pid=" << cache_reader_pid << "\n";
+
+    std::vector<pid_t> worker_pids(static_cast<size_t>(num_workers), -1);
+    bool fork_failed = false;
+    for (int i = 0; i < num_workers; ++i) {
+      const pid_t pid = spawn_worker(i);
+      if (pid < 0) {
+        std::cerr << "[ERROR] fork() for worker " << (i + 1) << "/" << num_workers
+                  << " failed: " << std::strerror(errno) << " (errno=" << errno << ")\n";
+        fork_failed = true;
+        break;
+      }
+      worker_pids[static_cast<size_t>(i)] = pid;
       std::cout << "[INFO] Started worker " << i << "/" << num_workers << " pid=" << pid << "\n";
     }
+    std::cout << std::flush;
 
-    // ---- Parent: close inherited resources ----
-    // The parent process does not handle FCGI requests — it only waits for
-    // children to exit.  The knxd_parent was already disconnected above.
-    // knxd_writer is per-worker (each child reconnects its own copy).
-
-    // Close the listen socket in the parent. The children inherited it
-    // via fork(), so it stays open for them. The parent doesn't need it
-    // and holding it open wastes an fd on embedded systems.
-    if (server.is_listening()) {
-      server.close_listen_socket();
-    }
+    // ---- Parent: inherited resources ----
+    // The parent process does not handle FCGI requests — it only supervises
+    // the children.  knxd_parent was already disconnected above; knxd_writer
+    // is per-worker (each child reconnects its own copy).
+    //
+    // The parent KEEPS the listen socket open: every worker the supervisor
+    // forks later inherits it.  Closing it here (as an earlier version did to
+    // save one fd) makes each replacement worker fall back to spawn-fcgi mode,
+    // exit immediately, and the pool can never recover from a crash.
+    //
+    // It also keeps the socket alive for the web server while no worker is
+    // accepting, so connections queue in the backlog instead of failing.
 
     if (fork_failed) {
       // Kill all successfully started children
-      std::cerr << "[ERROR] fork() failed for worker " << (worker_pids.size() + 1) << "/"
-                << num_workers << ", terminating " << worker_pids.size()
-                << " already-started worker(s)\n";
+      std::cerr << "[ERROR] fork() failed, terminating all started children\n";
+      if (cache_reader_pid > 0) {
+        ::kill(cache_reader_pid, SIGTERM);
+      }
       for (pid_t pid : worker_pids) {
-        ::kill(pid, SIGTERM);
+        if (pid > 0) {
+          ::kill(pid, SIGTERM);
+        }
       }
       // Wait for killed children
       int status = 0;
-      for (size_t k = 0; k < worker_pids.size(); ++k) {
-        ::wait(&status);
+      while (::wait(&status) > 0) {
       }
       result = 1;
     } else {
-      std::cout << "[INFO] All " << num_workers << " workers started, waiting for children...\n";
+      std::cout << "[INFO] All " << num_workers << " workers started, supervising children...\n";
       std::cout << std::flush;
 
-      // Wait for all child processes.  When a child exits unexpectedly,
-      // log it and continue waiting for others.  When SIGTERM is received,
-      // forward it to all children and wait for them to exit gracefully.
+      // ---- Supervisor ----
+      // The parent is the ONLY process that reaps children.  The SIGCHLD
+      // handler must not call waitpid(): doing so steals the exit statuses
+      // from this loop, so dead children were never noticed and never
+      // replaced — the pool silently shrank to nothing over weeks.
+      //
+      // Every dead child is logged and restarted.  A dead cache reader means
+      // no telegram ever reaches the shared cache again (the /r endpoint
+      // would keep serving stale values forever), so it is restarted too.
+      //
+      // Restarts are rate-limited: a child that dies right after starting is
+      // restarted with a growing delay (100 ms … 30 s) instead of spinning in
+      // a fork/crash loop.
+      struct RestartBackoff {
+        int delay_ms = 100;
+        std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
+        void on_spawn() { started_at = std::chrono::steady_clock::now(); }
+        [[nodiscard]] int on_death() {
+          const auto lived = std::chrono::duration_cast<std::chrono::seconds>(
+              std::chrono::steady_clock::now() - started_at);
+          if (lived.count() > 60) {
+            delay_ms = 100;  // it had been running fine — no crash loop
+          }
+          const int wait_ms = delay_ms;
+          delay_ms = std::min(delay_ms * 2, 30000);
+          return wait_ms;
+        }
+      };
+
+      RestartBackoff reader_backoff;
+      std::vector<RestartBackoff> worker_backoff(static_cast<size_t>(num_workers));
+
+      // A worker that died while serving a request took its semaphore tokens
+      // with it.  Restore at most one token per semaphore and never exceed the
+      // initial capacity, so a crash cannot permanently shrink the pool.
+      const auto restore_semaphore = [num_workers](sem_t* sem) {
+        if (sem == nullptr) {
+          return;
+        }
+        int value = 0;
+        if (::sem_getvalue(sem, &value) == 0 && value < num_workers) {
+          ::sem_post(sem);
+        }
+      };
+
       while (g_shutdown_requested == 0) {
         int status = 0;
-        pid_t waited = ::wait(&status);
+        const pid_t waited = ::wait(&status);
         if (waited < 0) {
           if (errno == EINTR) {
-            continue;  // interrupted by signal — check shutdown flag
+            continue;  // interrupted by a signal — check the shutdown flag
           }
-          if (errno == ECHILD) {
-            break;  // no more children
-          }
-          break;
+          break;  // ECHILD: no more children
         }
+
         if (WIFEXITED(status)) {
-          int exit_code = WEXITSTATUS(status);
+          const int exit_code = WEXITSTATUS(status);
           if (exit_code != 0) {
-            std::cerr << "[WARN] Worker pid=" << waited << " exited with code " << exit_code
-                      << "\n";
+            std::cerr << "[WARN] Child pid=" << waited << " exited with code " << exit_code << "\n";
           }
         } else if (WIFSIGNALED(status)) {
-          std::cerr << "[WARN] Worker pid=" << waited << " killed by signal " << WTERMSIG(status);
+          std::cerr << "[WARN] Child pid=" << waited << " killed by signal " << WTERMSIG(status);
           if (WCOREDUMP(status)) {
             std::cerr << " (core dumped)";
           }
           std::cerr << "\n";
         }
+        std::cerr << std::flush;
+
+        if (g_shutdown_requested != 0) {
+          break;  // shutting down — do not restart anything
+        }
+
+        if (waited == cache_reader_pid) {
+          std::cerr << "[ERROR] Cache reader pid=" << waited << " died — restarting it\n";
+          ::usleep(static_cast<useconds_t>(reader_backoff.on_death()) * 1000);
+          cache_reader_pid = spawn_cache_reader();
+          if (cache_reader_pid < 0) {
+            std::cerr << "[ERROR] fork() for cache reader failed: " << std::strerror(errno) << "\n";
+          } else {
+            reader_backoff.on_spawn();
+            std::cout << "[INFO] Restarted cache reader pid=" << cache_reader_pid << "\n";
+            std::cout << std::flush;
+          }
+          continue;
+        }
+
+        for (size_t i = 0; i < worker_pids.size(); ++i) {
+          if (worker_pids[i] != waited) {
+            continue;
+          }
+          restore_semaphore(concurrency_sem);
+          restore_semaphore(load_shed_sem);
+
+          std::cerr << "[WARN] Worker " << i << " (pid=" << waited << ") died — restarting it\n";
+          ::usleep(static_cast<useconds_t>(worker_backoff[i].on_death()) * 1000);
+          worker_pids[i] = spawn_worker(static_cast<int>(i));
+          if (worker_pids[i] < 0) {
+            std::cerr << "[ERROR] fork() for worker " << i << " failed: " << std::strerror(errno)
+                      << "\n";
+          } else {
+            worker_backoff[i].on_spawn();
+            std::cout << "[INFO] Restarted worker " << i << " pid=" << worker_pids[i] << "\n";
+            std::cout << std::flush;
+          }
+          break;
+        }
       }
 
       // Shutdown requested: kill remaining children and wait for them
       if (g_shutdown_requested != 0) {
-        std::cout << "[INFO] Shutdown requested, stopping " << worker_pids.size()
-                  << " workers...\n";
-        for (pid_t pid : worker_pids) {
-          ::kill(pid, SIGTERM);
+        std::cout << "[INFO] Shutdown requested, stopping all children...\n";
+        std::cout << std::flush;
+        if (cache_reader_pid > 0) {
+          ::kill(cache_reader_pid, SIGTERM);
         }
-        // Wait for all children to exit (SIGCHLD handler has already
-        // reaped those that exited immediately; this catches the rest).
+        for (pid_t pid : worker_pids) {
+          if (pid > 0) {
+            ::kill(pid, SIGTERM);
+          }
+        }
         int status = 0;
         while (::wait(&status) > 0) {
         }

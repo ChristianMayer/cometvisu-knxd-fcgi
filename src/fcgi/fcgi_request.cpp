@@ -36,6 +36,18 @@ std::string_view FcgiRequest::path() const {
     uri_path = (qpos == std::string::npos) ? std::string_view{request_uri}
                                            : std::string_view{request_uri.data(), qpos};
   } else {
+    // Some FastCGI setups (cgi-fcgi, mod_fcgid) pass only SCRIPT_NAME without
+    // REQUEST_URI.  Use its last path component as the endpoint identifier so
+    // that the endpoint can still be routed and rate-limited.
+    if (!script_name.empty()) {
+      const auto last_slash = script_name.rfind('/');
+      if (last_slash != std::string_view::npos) {
+        const std::string_view tail = std::string_view{script_name}.substr(last_slash);
+        if (tail != "/") {
+          return tail;
+        }
+      }
+    }
     return {};
   }
 

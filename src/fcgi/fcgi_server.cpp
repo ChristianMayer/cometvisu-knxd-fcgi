@@ -54,6 +54,45 @@ namespace cvknxd {
 /// Prevents OOM from a malicious CONTENT_LENGTH.
 inline constexpr int kMaxContentLength = 64 * 1024;
 
+namespace {
+
+/// Releases a semaphore token on scope exit.
+///
+/// The request loop has several exit paths (early `continue`, a throwing
+/// handler, an assertion failure in the handler) — all of them must return
+/// the token.  A leaked token permanently reduces the capacity of the whole
+/// worker pool, because nothing ever restores it.
+class SemToken {  // NOLINT(cppcoreguidelines-special-member-functions)
+public:
+  SemToken() = default;
+  explicit SemToken(sem_t* sem) : sem_(sem) {}
+  ~SemToken() { release(); }
+
+  SemToken(const SemToken&) = delete;
+  SemToken& operator=(const SemToken&) = delete;
+  SemToken(SemToken&& other) noexcept : sem_(other.sem_) { other.sem_ = nullptr; }
+  SemToken& operator=(SemToken&& other) noexcept {
+    if (this != &other) {
+      release();
+      sem_ = other.sem_;
+      other.sem_ = nullptr;
+    }
+    return *this;
+  }
+
+  void release() {
+    if (sem_ != nullptr) {
+      ::sem_post(sem_);
+      sem_ = nullptr;
+    }
+  }
+
+private:
+  sem_t* sem_ = nullptr;
+};
+
+}  // namespace
+
 FcgiServer::FcgiServer() = default;
 
 FcgiServer::~FcgiServer() {
@@ -70,6 +109,21 @@ void FcgiServer::set_load_shed_semaphore(sem_t* sem) {
 
 void FcgiServer::set_concurrency_semaphore(sem_t* sem) {
   concurrency_sem_ = sem;
+}
+
+FcgiResponse FcgiServer::invoke_handler(const FcgiRequest& request) {
+  try {
+    return handler_(request);
+  } catch (const std::exception& e) {
+    std::cerr << "[ERROR] Request handler threw an exception: " << e.what() << "\n";
+  } catch (...) {
+    std::cerr << "[ERROR] Request handler threw an unknown exception\n";
+  }
+
+  FcgiResponse resp;
+  resp.status_code = 500;
+  resp.body = R"({"error":"internal error"})";
+  return resp;
 }
 
 bool FcgiServer::listen(const std::string& socket_path, int backlog) {
@@ -134,71 +188,56 @@ int FcgiServer::run() {
       // is thread-safe and avoids the need to set `environ = request_.envp`.
       const FcgiRequest req = read_request(request_.envp);
 
-      // ---- General concurrency limiting ----
-      // Before processing any request, check if we have capacity.  If all
-      // workers are busy (semaphore exhausted), return HTTP 503 immediately.
-      // This prevents the listen backlog from filling up and causing the
-      // reverse proxy to return 502 Bad Gateway.  Write requests are NOT
-      // exempt — they complete quickly, so they won't hold the semaphore
-      // for long, and this ensures we never accept more connections than
-      // we can handle.
-      bool acquired_conc = false;
-      if (concurrency_sem_ != nullptr) {
-        if (::sem_trywait(concurrency_sem_) == 0) {
-          acquired_conc = true;
-        } else {
-          // All workers busy — return 503 immediately
-          FcgiResponse busy_resp;
-          busy_resp.status_code = 503;
-          busy_resp.body = R"({"error":"all workers busy"})";
-          write_response(busy_resp);
-          FCGX_Finish_r(&request_);
-          continue;
+      // ---- Capacity limiting for long-poll reads only ----
+      // Only /r can hold a worker for hundreds of seconds, so only /r takes a
+      // token.  Writes (/w) and logins (/l) finish in microseconds and must
+      // never be rejected — a spurious 503 here surfaces in CometVisu as a
+      // failed switch operation.
+      //
+      // The tokens are released by their destructors at the end of this
+      // iteration, so every exit path (early `continue`, throwing handler)
+      // returns the capacity.  A leaked token permanently shrinks the pool.
+      SemToken concurrency_token;
+      SemToken load_shed_token;
+      if (req.path() == "/r") {
+        if (concurrency_sem_ != nullptr) {
+          if (::sem_trywait(concurrency_sem_) != 0) {
+            // All workers busy — return 503 immediately
+            FcgiResponse busy_resp;
+            busy_resp.status_code = 503;
+            busy_resp.body = R"({"error":"all workers busy"})";
+            write_response(busy_resp);
+            FCGX_Finish_r(&request_);
+            continue;
+          }
+          concurrency_token = SemToken(concurrency_sem_);
         }
-      }
-
-      // ---- Load shedding for long-poll requests ----
-      // When a shared semaphore is configured, try to acquire it before
-      // dispatching read (long-poll) requests.  If the semaphore is
-      // exhausted (all workers busy with long-polls), return an empty
-      // response immediately.  Write requests bypass this check so they
-      // are always served, preventing head-of-line blocking from
-      // long-poll reads.
-      bool acquired_sem = false;
-      if (load_shed_sem_ != nullptr && req.path() == "/r") {
-        // sem_trywait returns 0 on success, -1 with EAGAIN if exhausted
-        if (::sem_trywait(load_shed_sem_) == 0) {
-          acquired_sem = true;
-        } else {
-          // All workers busy with long-polls — return empty immediately.
-          // The client will retry, and this frees up the accept queue for
-          // write requests which complete quickly.
-          FcgiResponse empty_resp;
-          empty_resp.status_code = 503;
-          empty_resp.body = R"({"error":"too many long-poll requests"})";
-          write_response(empty_resp);
-          FCGX_Finish_r(&request_);
-          continue;
+        if (load_shed_sem_ != nullptr) {
+          // sem_trywait returns 0 on success, -1 with EAGAIN if exhausted
+          if (::sem_trywait(load_shed_sem_) != 0) {
+            // All workers busy with long-polls — return empty immediately.
+            // The client will retry, and this frees up the accept queue for
+            // write requests which complete quickly.
+            FcgiResponse empty_resp;
+            empty_resp.status_code = 503;
+            empty_resp.body = R"({"error":"too many long-poll requests"})";
+            write_response(empty_resp);
+            FCGX_Finish_r(&request_);
+            continue;
+          }
+          load_shed_token = SemToken(load_shed_sem_);
         }
       }
 
       DebugLog::http_request(req.request_method, req.request_uri);
 
-      const FcgiResponse resp = handler_(req);
+      const FcgiResponse resp = invoke_handler(req);
 
       DebugLog::http_response(resp.status_code, resp.body);
 
       write_response(resp);
 
       FCGX_Finish_r(&request_);
-
-      // Release the semaphores after the request completes
-      if (acquired_sem) {
-        ::sem_post(load_shed_sem_);
-      }
-      if (acquired_conc) {
-        ::sem_post(concurrency_sem_);
-      }
     }
   } else {
     // ---- Spawn-fcgi mode ----
@@ -211,7 +250,7 @@ int FcgiServer::run() {
 
       DebugLog::http_request(req.request_method, req.request_uri);
 
-      const FcgiResponse resp = handler_(req);
+      const FcgiResponse resp = invoke_handler(req);
 
       DebugLog::http_response(resp.status_code, resp.body);
 
@@ -243,7 +282,7 @@ void FcgiServer::shutdown() {
     // the pathological case where multiple workers were stuck in accept()
     // simultaneously and the kernel delivered the shutdown signal to only
     // one of them.
-    struct sockaddr_un addr {};
+    struct sockaddr_un addr{};
     socklen_t addr_len = sizeof(addr);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     if (::getsockname(listen_fd_, reinterpret_cast<struct sockaddr*>(&addr), &addr_len) == 0) {
