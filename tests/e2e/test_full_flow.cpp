@@ -19,11 +19,10 @@
 #include "handlers/login_handler.h"
 #include "handlers/read_handler.h"
 #include "handlers/write_handler.h"
-
 #include "mock_knxd_socket.h"
 #include "router/router.h"
-#include "state/shared_group_cache.h"
 #include "state/session_store.h"
+#include "state/shared_group_cache.h"
 
 using namespace cvknxd;
 
@@ -36,9 +35,9 @@ protected:
     (void)knxd_.open_group_socket(false);
   }
 
-  MockKnxdClient knxd_; // NOLINT
-  SharedGroupCache cache_; // NOLINT
-  SessionStore sessions_; // NOLINT
+  MockKnxdClient knxd_;     // NOLINT
+  SharedGroupCache cache_;  // NOLINT
+  SessionStore sessions_;   // NOLINT
 };
 
 // ---- Login Flow ----

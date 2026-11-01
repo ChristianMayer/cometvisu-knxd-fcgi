@@ -277,7 +277,7 @@ bool SharedGroupCache::wait_for_new_data(int timeout_ms) {
   }
 
   // Compute absolute timeout using monotonic clock.
-  struct timespec ts {};
+  struct timespec ts{};
   ::clock_gettime(CLOCK_MONOTONIC, &ts);
   int64_t total_ns =
       static_cast<int64_t>(ts.tv_nsec) + static_cast<int64_t>(timeout_ms) * 1'000'000LL;

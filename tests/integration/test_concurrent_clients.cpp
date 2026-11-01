@@ -26,7 +26,6 @@
 
 #include <array>
 #include <atomic>
-#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -75,10 +74,12 @@ bool sockets_available() {
   if (s < 0) {
     return false;
   }
-  struct sockaddr_un addr {};
+  struct sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   size_t path_len = path.copy(addr.sun_path, sizeof(addr.sun_path) - 1);
   addr.sun_path[path_len] = '\0';
+  // POSIX requires sockaddr* for this API despite the concrete address type.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
   int rc = bind(s, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
   close(s);
   unlink(path.c_str());
@@ -118,6 +119,7 @@ bool fcgi_send_record(int fd, uint8_t type, uint16_t request_id, const uint8_t* 
   if (body != nullptr && body_len > 0) {
     off = 0;
     while (off < body_len) {
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
       ssize_t n = write(fd, &body[off], body_len - off);
       if (n <= 0) {
         return false;
@@ -133,6 +135,7 @@ bool fcgi_send_record(int fd, uint8_t type, uint16_t request_id, const uint8_t* 
 bool read_exact(int fd, uint8_t* buf, size_t len) {
   size_t off = 0;
   while (off < len) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     ssize_t n = read(fd, &buf[off], len - off);
     if (n <= 0) {
       return false;
@@ -168,8 +171,9 @@ bool fcgi_read_header(int fd, uint8_t& out_type, uint16_t& out_request_id,
 /// Read an FCGI record body.
 bool fcgi_read_body(int fd, std::vector<uint8_t>& out_body, uint16_t content_len) {
   out_body.resize(content_len);
-  if (content_len == 0)
+  if (content_len == 0) {
     return true;
+  }
   return read_exact(fd, out_body.data(), content_len);
 }
 
@@ -201,19 +205,25 @@ void encode_nv_pair(std::vector<uint8_t>& buf, const std::string& name, const st
 /// and reads the response body.
 class FcgiTestClient {
 public:
+  FcgiTestClient() = default;
   ~FcgiTestClient() { disconnect(); }
+  FcgiTestClient(const FcgiTestClient&) = delete;
+  FcgiTestClient& operator=(const FcgiTestClient&) = delete;
+  FcgiTestClient(FcgiTestClient&&) = delete;
+  FcgiTestClient& operator=(FcgiTestClient&&) = delete;
 
   /// @brief Check if the client is connected.
   [[nodiscard]] bool is_connected() const { return fd_ >= 0; }
 
   [[nodiscard]] bool connect(const std::string& socket_path) {
     fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd_ < 0)
+    if (fd_ < 0) {
       return false;
+    }
 
     // Set a receive timeout to prevent test hangs in CI.
     // If the server doesn't respond within 5 seconds, read_response() fails.
-    struct timeval tv {};
+    struct timeval tv{};
     tv.tv_sec = 5;
     if (::setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
       close(fd_);
@@ -221,11 +231,13 @@ public:
       return false;
     }
 
-    struct sockaddr_un addr {};
+    struct sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     size_t path_len = socket_path.copy(addr.sun_path, sizeof(addr.sun_path) - 1);
     addr.sun_path[path_len] = '\0';
 
+    // POSIX requires sockaddr* for this API despite the concrete address type.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     if (::connect(fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
       close(fd_);
       fd_ = -1;
@@ -323,6 +335,8 @@ private:
 
 }  // namespace
 
+namespace {
+
 /// Shared state between parent process and forked workers.
 /// Placed in mmap'd MAP_SHARED memory so children can update atomics.
 struct SharedState {
@@ -333,17 +347,19 @@ struct SharedState {
 
 /// Fork N children, each running server.run() on the shared listen socket.
 /// Returns child PIDs on success, empty vector on failure.
-static std::vector<pid_t> fork_workers(int num_workers, FcgiServer& server) {
+std::vector<pid_t> fork_workers(int num_workers, FcgiServer& server) {
   std::vector<pid_t> children;
   children.reserve(static_cast<size_t>(num_workers));
   for (int i = 0; i < num_workers; ++i) {
     pid_t pid = ::fork();
     if (pid < 0) {
-      for (pid_t child : children)
+      for (pid_t child : children) {
         ::kill(child, SIGTERM);
-      int status;
-      for (size_t j = 0; j < children.size(); ++j)
+      }
+      int status{};
+      for (size_t j = 0; j < children.size(); ++j) {
         ::wait(&status);
+      }
       children.clear();
       break;
     }
@@ -357,12 +373,14 @@ static std::vector<pid_t> fork_workers(int num_workers, FcgiServer& server) {
 }
 
 /// Kill all workers and wait for them to exit.
-static void kill_workers(const std::vector<pid_t>& children) {
-  for (pid_t child : children)
+void kill_workers(const std::vector<pid_t>& children) {
+  for (pid_t child : children) {
     ::kill(child, SIGTERM);
-  int status;
-  for (size_t i = 0; i < children.size(); ++i)
+  }
+  int status{};
+  for (size_t i = 0; i < children.size(); ++i) {
     ::wait(&status);
+  }
 }
 
 // ============================================================
@@ -372,22 +390,23 @@ static void kill_workers(const std::vector<pid_t>& children) {
 /// the readiness pipe signal and the actual accept() call — retrying with
 /// backoff covers this.
 /// @return The response body, or empty string if all attempts failed.
-static std::string fcgi_retry_transaction(const std::string& socket_path,
-                                          const std::string& query_string, uint16_t request_id,
-                                          int max_attempts = 30) {
+std::string fcgi_retry_transaction(const std::string& socket_path, const std::string& query_string,
+                                   uint16_t request_id, int max_attempts = 30) {
   int delay_ms = 10;
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
     FcgiTestClient client;
     if (!client.connect(socket_path)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-      if (delay_ms < 500)
+      if (delay_ms < 500) {
         delay_ms *= 2;
+      }
       continue;
     }
     if (!client.send_get_request(request_id, query_string, "/r")) {
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-      if (delay_ms < 500)
+      if (delay_ms < 500) {
         delay_ms *= 2;
+      }
       continue;
     }
     std::string result = client.read_response(request_id);
@@ -396,8 +415,9 @@ static std::string fcgi_retry_transaction(const std::string& socket_path,
     }
     // Empty response — worker may not have picked up the connection yet.
     std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-    if (delay_ms < 500)
+    if (delay_ms < 500) {
       delay_ms *= 2;
+    }
   }
   return {};
 }
@@ -464,6 +484,7 @@ TEST_F(ConcurrentClientsTest, MultipleClientsProcessedConcurrently) {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   std::vector<std::thread> client_threads;
+  client_threads.reserve(kNumClients);
   std::vector<std::string> results(kNumClients);
   std::vector<bool> success(kNumClients, false);
 
@@ -538,8 +559,9 @@ TEST_F(ConcurrentClientsTest, EnvironmentParamsNotSharedAcrossWorkers) {
     auto pos = qs.find("client=");
     std::string client_id = (pos != std::string::npos) ? std::string(qs.substr(pos + 7, 2)) : "?";
     auto end = client_id.find('&');
-    if (end != std::string::npos)
+    if (end != std::string::npos) {
       client_id.resize(end);
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     shared->response_count.fetch_add(1);
     FcgiResponse resp;
@@ -553,6 +575,7 @@ TEST_F(ConcurrentClientsTest, EnvironmentParamsNotSharedAcrossWorkers) {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   std::vector<std::thread> client_threads;
+  client_threads.reserve(kNumClients);
   std::vector<std::string> results(kNumClients);
   std::vector<bool> success(kNumClients, false);
 
@@ -628,6 +651,7 @@ TEST_F(ConcurrentClientsTest, ManyConcurrentClientsStressTest) {
 
   // ---- Launch clients ----
   std::vector<std::thread> client_threads;
+  client_threads.reserve(kNumClients);
   std::vector<std::string> results(kNumClients);
   std::vector<bool> success(kNumClients, false);
 
@@ -638,6 +662,7 @@ TEST_F(ConcurrentClientsTest, ManyConcurrentClientsStressTest) {
       success[i] = !results[i].empty();
     });
   }
+
   for (auto& t : client_threads) {
     t.join();
   }
@@ -661,3 +686,5 @@ TEST_F(ConcurrentClientsTest, ManyConcurrentClientsStressTest) {
   }
   ::munmap(shared, sizeof(SharedState));
 }
+
+}  // namespace

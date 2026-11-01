@@ -112,7 +112,12 @@ bool sockets_available() {
 // They do NOT start FCGI_Accept() — they just connect a plain Unix socket
 // to verify the kernel-level socket is alive. This is safe on CI.
 //
+namespace {
+
 class FcgiServerSocketTest : public ::testing::Test {
+public:
+  [[nodiscard]] const std::string& socket_path() const { return socket_path_; }
+
 protected:
   void SetUp() override {
     if (!sockets_available()) {
@@ -143,24 +148,26 @@ protected:
     return fd;
   }
 
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
+private:
   std::string socket_path_;
 };
 
 TEST_F(FcgiServerSocketTest, ListenOpensSocket) {
   FcgiServer server;
-  EXPECT_TRUE(server.listen(socket_path_));
+  EXPECT_TRUE(server.listen(socket_path()));
   EXPECT_TRUE(server.is_listening());
 }
 
 TEST_F(FcgiServerSocketTest, CanConnectToListeningSocket) {
   FcgiServer server;
-  ASSERT_TRUE(server.listen(socket_path_));
+  ASSERT_TRUE(server.listen(socket_path()));
 
   int fd = connect_to_server();
   ASSERT_GE(fd, 0) << "Failed to connect to listening socket";
   close(fd);
 }
+
+}  // namespace
 
 // ============================================================
 // Death tests - invalid socket paths
@@ -257,7 +264,7 @@ TEST_F(FcgiServerSocketTest, ConcurrencyExhaustionReturns503) {
   if (child == 0) {
     // Child: run the server with concurrency semaphore exhausted (0 slots)
     FcgiServer server;
-    ASSERT_TRUE(server.listen(socket_path_));
+    ASSERT_TRUE(server.listen(socket_path()));
     server.set_concurrency_semaphore(conc_sem);
     server.set_handler([](const FcgiRequest& /*req*/) -> FcgiResponse {
       return {.status_code = 200, .body = "{}"};
@@ -270,7 +277,7 @@ TEST_F(FcgiServerSocketTest, ConcurrencyExhaustionReturns503) {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   // Send request — must get 503 because concurrency semaphore is exhausted
-  int status = fcgi_request_status(socket_path_, "/r", "a=1/2/3&t=5");
+  int status = fcgi_request_status(socket_path(), "/r", "a=1/2/3&t=5");
   EXPECT_EQ(status, 503)
       << "Request must get 503 when concurrency semaphore is exhausted (0 slots)";
 
@@ -299,7 +306,7 @@ TEST_F(FcgiServerSocketTest, WritesAreServedWhileConcurrencySemaphoreIsExhausted
 
   if (child == 0) {
     FcgiServer server;
-    ASSERT_TRUE(server.listen(socket_path_));
+    ASSERT_TRUE(server.listen(socket_path()));
     server.set_concurrency_semaphore(conc_sem);
     server.set_handler([](const FcgiRequest& /*req*/) -> FcgiResponse {
       return {.status_code = 200, .body = "{}"};
@@ -310,7 +317,7 @@ TEST_F(FcgiServerSocketTest, WritesAreServedWhileConcurrencySemaphoreIsExhausted
 
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-  EXPECT_EQ(fcgi_request_status(socket_path_, "/w", "a=1/2/3&v=80"), 200)
+  EXPECT_EQ(fcgi_request_status(socket_path(), "/w", "a=1/2/3&v=80"), 200)
       << "A write must be served even when all long-poll slots are taken";
 
   kill(child, SIGTERM);
@@ -332,7 +339,7 @@ TEST_F(FcgiServerSocketTest, WritesAreServedWhileLoadShedSemaphoreIsExhausted) {
 
   if (child == 0) {
     FcgiServer server;
-    ASSERT_TRUE(server.listen(socket_path_));
+    ASSERT_TRUE(server.listen(socket_path()));
     server.set_load_shed_semaphore(shed_sem);
     server.set_handler([](const FcgiRequest& /*req*/) -> FcgiResponse {
       return {.status_code = 200, .body = "{}"};
@@ -343,9 +350,9 @@ TEST_F(FcgiServerSocketTest, WritesAreServedWhileLoadShedSemaphoreIsExhausted) {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-  EXPECT_EQ(fcgi_request_status(socket_path_, "/w", "a=1/2/3&v=80"), 200)
+  EXPECT_EQ(fcgi_request_status(socket_path(), "/w", "a=1/2/3&v=80"), 200)
       << "A write must be served even when long-poll load shedding is active";
-  EXPECT_EQ(fcgi_request_status(socket_path_, "/r", "a=1/2/3&t=5"), 503)
+  EXPECT_EQ(fcgi_request_status(socket_path(), "/r", "a=1/2/3&t=5"), 503)
       << "A read must still be shed when no long-poll slot is left";
 
   kill(child, SIGTERM);
@@ -368,7 +375,7 @@ TEST_F(FcgiServerSocketTest, HandlerExceptionReturns500AndKeepsTheWorkerAlive) {
   if (child == 0) {
     std::atomic<int> calls{0};
     FcgiServer server;
-    ASSERT_TRUE(server.listen(socket_path_));
+    ASSERT_TRUE(server.listen(socket_path()));
     server.set_handler([&calls](const FcgiRequest& /*req*/) -> FcgiResponse {
       if (calls.fetch_add(1) == 0) {
         throw std::runtime_error("boom");
@@ -381,8 +388,8 @@ TEST_F(FcgiServerSocketTest, HandlerExceptionReturns500AndKeepsTheWorkerAlive) {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-  EXPECT_EQ(fcgi_request_status(socket_path_, "/r", "a=1/2/3&t=5"), 500);
-  EXPECT_EQ(fcgi_request_status(socket_path_, "/r", "a=1/2/3&t=5"), 200)
+  EXPECT_EQ(fcgi_request_status(socket_path(), "/r", "a=1/2/3&t=5"), 500);
+  EXPECT_EQ(fcgi_request_status(socket_path(), "/r", "a=1/2/3&t=5"), 200)
       << "The worker must survive a throwing handler";
 
   kill(child, SIGTERM);
@@ -394,14 +401,14 @@ TEST_F(FcgiServerSocketTest, HandlerExceptionReturns500AndKeepsTheWorkerAlive) {
 
 TEST_F(FcgiServerSocketTest, SocketFileExistsAfterListen) {
   FcgiServer server;
-  ASSERT_TRUE(server.listen(socket_path_));
-  EXPECT_EQ(access(socket_path_.c_str(), F_OK), 0);
+  ASSERT_TRUE(server.listen(socket_path()));
+  EXPECT_EQ(access(socket_path().c_str(), F_OK), 0);
 }
 
 TEST_F(FcgiServerSocketTest, IsListeningStateAfterSuccessfulListen) {
   FcgiServer server;
   EXPECT_FALSE(server.is_listening());
-  ASSERT_TRUE(server.listen(socket_path_));
+  ASSERT_TRUE(server.listen(socket_path()));
   EXPECT_TRUE(server.is_listening());
 }
 
@@ -412,7 +419,7 @@ TEST_F(FcgiServerSocketTest, MultipleListenCalls) {
   ASSERT_FALSE(path2.empty());
 
   FcgiServer server;
-  EXPECT_TRUE(server.listen(socket_path_));
+  EXPECT_TRUE(server.listen(socket_path()));
   EXPECT_TRUE(server.is_listening());
   EXPECT_TRUE(server.listen(path2));
   EXPECT_TRUE(server.is_listening());
